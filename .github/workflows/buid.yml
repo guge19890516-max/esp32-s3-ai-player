@@ -1,0 +1,53 @@
+name: ESP32-S3 Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+env:
+  # ESP-IDF version - latest stable at time of writing
+  ESP_IDF_VERSION: "5.3"
+  # Default board
+  BOARD: esp32-s3-devkitc-1
+  # Build type
+  BUILD_TYPE: release
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up ESP-IDF
+        uses: espressif/esp-idf-ci-action@v3
+        with:
+          esp_idf_version: ${{ env.ESP_IDF_VERSION }}
+
+      - name: Install Python requirements
+        run: pip install platformio
+
+      - name: Build project with PlatformIO
+        run: pio run -e esp32s3
+
+      - name: Show build artifacts
+        run: |
+          echo "Build completed!"
+          ls .pio/build/esp32s3/*.elf 2>/dev/null || echo "No ELF"
+          ls .pio/build/esp32s3/*.bin 2>/dev/null || echo "No BIN"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32s3-firmware
+          path: |
+            .pio/build/esp32s3/esp32s3.bin
+            .pio/build/esp32s3/esp32s3.elf
+          retention-days: 30
