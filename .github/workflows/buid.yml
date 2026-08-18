@@ -1,4 +1,4 @@
-name: ESP32-S3 Build
+name: ESP32‑S3 Build
 
 on:
   push:
@@ -8,12 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  # ESP-IDF version - latest stable at time of writing
-  ESP_IDF_VERSION: "5.3"
-  # Default board
   BOARD: esp32-s3-devkitc-1
-  # Build type
-  BUILD_TYPE: release
 
 jobs:
   build:
@@ -23,31 +18,27 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
+          python-version: "3.11"
 
-      - name: Set up ESP-IDF
-        uses: espressif/esp-idf-ci-action@v3
-        with:
-          esp_idf_version: ${{ env.ESP_IDF_VERSION }}
+      - name: Install PlatformIO
+        run: |
+          pip install platformio
+          pio --version
 
-      - name: Install Python requirements
-        run: pip install platformio
-
-      - name: Build project with PlatformIO
+      - name: Build PlatformIO project esp32s3
         run: pio run -e esp32s3
 
-      - name: Show build artifacts
-        run: |
-          echo "Build completed!"
-          ls .pio/build/esp32s3/*.elf 2>/dev/null || echo "No ELF"
-          ls .pio/build/esp32s3/*.bin 2>/dev/null || echo "No BIN"
+      - name: List output files
+        run: ls -la .pio/build/esp32s3/
 
-      - name: Upload build artifact
+      - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
           name: esp32s3-firmware
-          path: |
-            .pio/build/esp32s3/esp32s3.bin
-            .pio/build/esp32s3/esp32s3.elf
+          # 通配符，不要写死文件名！pio默认输出 firmware.bin
+          path: .pio/build/esp32s3/*.bin
           retention-days: 30
