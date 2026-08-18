@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <SD.h>
 
 enum AudioState { AUDIO_IDLE, AUDIO_PLAYING, AUDIO_PAUSED, AUDIO_STOPPED };
 
@@ -22,7 +23,7 @@ public:
 private:
     AudioState _state = AUDIO_IDLE;
     uint8_t _volume = 80;
-    File _file;
+    SDFile SDFile;
     uint32_t _file_size = 0;
     uint8_t _buffer[2048];
 };

@@ -76,8 +76,8 @@ void AudioPlayer::resume() {
 
 void AudioPlayer::stop() {
     _state = AUDIO_STOPPED;
-    if (_file) {
-        _file.close();
+    if (SDFile) {
+        SDFile.close();
     }
     // Silence I2S
     uint8_t silence[1024] = {0};
@@ -93,8 +93,8 @@ void AudioPlayer::setVolume(uint8_t vol) {
 }
 
 uint32_t AudioPlayer::getPosition() {
-    if (!_file) return 0;
-    return _file.position();
+    if (!SDFile) return 0;
+    return SDFile.position();
 }
 
 uint32_t AudioPlayer::getDuration() {
@@ -102,9 +102,9 @@ uint32_t AudioPlayer::getDuration() {
 }
 
 void AudioPlayer::update() {
-    if (_state != AUDIO_PLAYING || !_file) return;
+    if (_state != AUDIO_PLAYING || !SDFile) return;
 
-    size_t bytes_read = _file.read(_buffer, sizeof(_buffer));
+    size_t bytes_read = SDFile.read(_buffer, sizeof(_buffer));
     if (bytes_read == 0) {
         stop();
         return;
