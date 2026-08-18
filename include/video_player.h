@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <SD.h>
 
 class VideoPlayer {
 public:
