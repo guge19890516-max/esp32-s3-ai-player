@@ -23,7 +23,7 @@ public:
 private:
     AudioState _state = AUDIO_IDLE;
     uint8_t _volume = 80;
-    SDFile SDFile;
+    File _file;
     uint32_t _file_size = 0;
     uint8_t _buffer[2048];
 };

@@ -2,26 +2,44 @@
 #include <Arduino.h>
 #include <LovyanGFX.hpp>
 #include <lvgl.h>
+#include "config.h"
 
-class LGFX : public lovyan::LovyanGFX {
+class LGFX : public lgfx::LGFX_Device {
 public:
-    LGFX() : LovyanGFX(new config_t()) {}
+    LGFX() {
+        auto *bus = new lgfx::Bus_SPI();
+        {
+            auto cfg = bus->config();
+            cfg.pin_mosi = TFT_MOSI;
+            cfg.pin_miso = TFT_MISO;
+            cfg.pin_sclk = TFT_SCLK;
+            cfg.pin_dc   = TFT_DC;
+            cfg.freq_write = 40000000;
+            cfg.freq_read  = 16000000;
+            bus->config(cfg);
+        }
 
-    void init() override {
-        auto cfg = _config;
-        cfg.pin_mosi = TFT_MOSI;
-        cfg.pin_miso = TFT_MISO;
-        cfg.pin_sclk = TFT_SCLK;
-        cfg.pin_cs   = TFT_CS;
-        cfg.pin_dc   = TFT_DC;
-        cfg.pin_rst  = TFT_RST;
-        cfg.bus_shared = true;
-        cfg.freq_write = 40000000;
-        cfg.freq_read  = 16000000;
-        cfg.panel = new lgfx::Panel_ST7796();
-        _config = cfg;
-        LovyanGFX::init();
-        setRotation(1);
+        auto *panel = new lgfx::Panel_ST7796();
+        {
+            auto cfg = panel->config();
+            cfg.pin_cs   = TFT_CS;
+            cfg.pin_rst  = TFT_RST;
+            cfg.memory_width  = 480;
+            cfg.memory_height = 320;
+            cfg.panel_width   = 480;
+            cfg.panel_height  = 320;
+            cfg.offset_x = 0;
+            cfg.offset_y = 0;
+            cfg.offset_rotation = 1;
+            cfg.invert = true;
+            cfg.rgb_order = false;
+            cfg.dlen_16bit = false;
+            cfg.bus_shared = true;
+            panel->config(cfg);
+        }
+
+        setBus(bus);
+        setPanel(panel);
     }
 
     void initBL() {
