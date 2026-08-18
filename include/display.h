@@ -38,7 +38,7 @@ public:
             panel->config(cfg);
         }
 
-        setBus(bus);
+        panel->setBus(bus);
         setPanel(panel);
     }
 

@@ -38,7 +38,7 @@ void DisplayManager::begin() {
     _disp_drv.ver_res = SCREEN_HEIGHT;
     _disp_drv.flush_cb = lvgl_flush_cb;
     _disp_drv.draw_buf = &_draw_buf;
-    _disp_drv.full_refr = false;
+    _disp_drv.full_refresh = false;
     lv_disp_drv_register(&_disp_drv);
 
     _last_tick = millis();
@@ -49,12 +49,12 @@ void DisplayManager::update() {
     uint32_t tick = millis() - _last_tick;
     _last_tick = millis();
     lv_timer_handler();
-    lv_tick_inc(tick);
 }
 
 void DisplayManager::setBrightness(uint8_t level) {
-    ledcAttach(TFT_BL, 5000, 8);
-    ledcWrite(TFT_BL, level);
+    ledcSetup(0, 5000, 8);
+    ledcAttachPin(TFT_BL, 0);
+    ledcWrite(0, level);
 }
 
 void DisplayManager::lvgl_flush_cb(lv_disp_drv_t* disp, const lv_area_t* area, lv_color_t* color_p) {
