@@ -9,14 +9,17 @@
 #include "keyboard.h"
 #include "ai_client.h"
 #include "frame_log.h"
+#include "text_codec.h"
 #include "serial_link.h"
 #include "ota_update.h"
 #include "ota_http.h"
 #include "bms_client.h"
 #include "cfg_table.h"
+#include "bt_module.h"
+#include "ble_relay.h"
 #include "rec_store.h"
 
-enum Screen : uint8_t { S_HOME, S_CHAT, S_SETTINGS, S_WIFI, S_WIFIPASS, S_API, S_XIAOZHI, S_SERIAL, S_FRAMES, S_AIANA, S_OTA, S_OTAURL, S_BMS, S_STATUS, S_CONF, S_MODELS };
+enum Screen : uint8_t { S_HOME, S_CHAT, S_SETTINGS, S_WIFI, S_WIFIPASS, S_API, S_XIAOZHI, S_SERIAL, S_FRAMES, S_AIANA, S_OTA, S_OTAURL, S_BMS, S_STATUS, S_CONF, S_BTMOD, S_RELAY, S_MODELS };
 static Screen scr = S_CHAT;
 
 static bool dirtyFull = true;
@@ -36,6 +39,7 @@ static uint32_t toastUntil = 0;
 static bool needRestore = false;
 
 static bool dlgClear = false;
+static bool pickOpen = false;   // 枚举选择弹窗打开中（定义见 pickOpenDlg 区块）
 
 struct ApInfo { String ssid; int rssi; };
 static std::vector<ApInfo> apList;
@@ -135,6 +139,7 @@ static const int ITEM_H = 44;
 static void gotoScreen(Screen s)
 {
   scr = s;
+  pickOpen = false;   // 跳页时关闭可能残留的选项弹窗
   dirtyFull = true;
   chatDragging = false;
   listDragging = false;
@@ -224,11 +229,19 @@ static void serialSend()
   String s = kbPeek();
   s.trim();
   if (!s.length()) { showToast("请输入要发送的内容"); return; }
-  if (!slActive())
+
+  // 发送目标（配置项 relay.tx）：手机+模块 / 仅手机 / 仅模块
+  int ti = cfgIndexOf("relay.tx");
+  String tgt = ti >= 0 ? cfgGetRaw(cfgAt(ti)) : String("手机+模块");
+  bool toPhone = tgt != "仅模块";
+  bool toModule = tgt != "仅手机";
+  if (toPhone && !slActive())
   {
     showToast(slMode() == LINK_BLE ? "BLE 尚未连接" : "TCP 尚未连接");
     return;
   }
+  if (toModule && !relayConnected()) { showToast("中继未连接模块"); return; }
+
   if (flHexMode)
   {
     uint8_t buf[256];
@@ -237,7 +250,8 @@ static void serialSend()
     String bin;
     bin.reserve(n);
     bin.concat((const char *)buf, n);
-    if (!slSend(bin)) { showToast("发送失败"); return; }
+    if (toPhone && !slSend(bin)) { showToast("发送失败"); return; }
+    if (toModule) relaySend(buf, n);   // 经模块上 485 总线
     kbTake();
     flAddTxRaw(buf, n);
   }
@@ -245,9 +259,11 @@ static void serialSend()
   {
     String out = s;
     if (serialEol) out += "\r\n";
-    if (!slSend(out)) { showToast("发送失败"); return; }
+    String wire = tcEncodeTx(out);   // 按「发送编码」转成链路字节（UTF-8 时原样）
+    if (toPhone && !slSend(wire)) { showToast("发送失败"); return; }
+    if (toModule) relaySend((const uint8_t *)wire.c_str(), wire.length());
     kbTake();
-    flAddTx(s);
+    flAddTxWire(s, (const uint8_t *)wire.c_str(), wire.length());   // hex=实际字节 text=原输入
   }
   dirtyInput = true;
   dirtyFull = true;
@@ -467,6 +483,8 @@ const char *t = (scr == S_SETTINGS) ? "设置" : (scr == S_WIFI) ? "WiFi 设置"
                                      : (scr == S_OTA)             ? "固件升级"
                                      : (scr == S_OTAURL)          ? "升级地址"
                                      : (scr == S_CONF)            ? "配置项"
+                                     : (scr == S_BTMOD)           ? "蓝牙模块"
+                                     : (scr == S_RELAY)           ? "蓝牙中继"
                                      : (scr == S_MODELS)          ? "模型列表"
                                      : (scr == S_STATUS)          ? "设备状态"
                                                                    : "API 设置";
@@ -476,24 +494,26 @@ const char *t = (scr == S_SETTINGS) ? "设置" : (scr == S_WIFI) ? "WiFi 设置"
 
 static void drawSettingsBody()
 {
-  // 9 行：行高 46、步进 49，最后一行 432..478，全部在 480 屏内
+  // 11 行：行高 36、步进 40，最后一行 440..476，全部在 480 屏内
   struct Row { int y; const char *label; };
-  Row rows[9] = {
+  Row rows[11] = {
     {40, "WiFi 设置"},
-    {89, "AI 接口设置"},
-    {138, "电池监测 (BMS)"},
-    {187, "固件升级 (OTA)"},
-    {236, "设备状态"},
-    {285, "配置项"},
-    {334, "清除聊天记录"},
-    {383, "重启设备"},
-    {432, "返回主页"},
+    {80, "AI 接口设置"},
+    {120, "蓝牙模块"},
+    {160, "蓝牙中继"},
+    {200, "电池监测 (BMS)"},
+    {240, "固件升级 (OTA)"},
+    {280, "设备状态"},
+    {320, "配置项"},
+    {360, "清除聊天记录"},
+    {400, "重启设备"},
+    {440, "返回主页"},
   };
   for (auto &r : rows)
   {
-    gfx->fillRoundRect(3, r.y, 314, 46, 8, COL_PANEL);
-    drawTextAt(14, centerBaseY(r.y, 46), r.label, COL_TEXT, COL_PANEL);
-    drawTextAt(296, centerBaseY(r.y, 46), ">", COL_SUB, COL_PANEL);
+    gfx->fillRoundRect(3, r.y, 314, 36, 8, COL_PANEL);
+    drawTextAt(14, centerBaseY(r.y, 36), r.label, COL_TEXT, COL_PANEL);
+    drawTextAt(296, centerBaseY(r.y, 36), ">", COL_SUB, COL_PANEL);
   }
 }
 
@@ -717,29 +737,118 @@ static void confLeaveEdit(bool save)
   dirtyFull = true;
 }
 
-// ENUM 选项循环：返回下一项，当前值不在表里则取第一项
-static String confNextEnum(const CfgItem &it)
+// ENUM 选项循环逻辑已由 pickOpenDlg 弹窗取代（点条目弹出全部选项直接选）
+
+// —— 枚举选择弹窗：点条目弹出全部选项直接选，不再点击循环切换 ——
+static int pickMode = 0;          // 1=写配置项 2=AT+BAUD 3=AT+PARI 4=AT+STOP
+static String pickTitle;
+static std::vector<String> pickOpts;
+static int pickCur = -1;          // 当前值高亮行，-1=无
+static CfgItem pickItem;          // pickMode==1 时要写的配置项
+static std::vector<String> btmodLines;   // 信息/应答展示区（已折行）；提前声明供弹窗应用逻辑使用
+static void btmodApply(const String &cmd);   // 前置声明：弹窗应用时要发 AT
+
+static void pickOpenDlg(int mode, const String &title, const String &opts,
+                        const String &cur, const CfgItem &item = CfgItem())
 {
-  String cur = cfgGetRaw(it);
-  String opts = it.options;
-  String first, next;
+  pickMode = mode;
+  pickTitle = title;
+  pickOpts.clear();
   int i = 0;
-  bool takeNext = (cur.length() == 0);   // 当前没值 → 取第一项
   while (i <= opts.length())
   {
     int p = opts.indexOf('|', i);
     if (p < 0) p = opts.length();
     String o = opts.substring(i, p);
-    if (!first.length()) first = o;
-    if (takeNext && o != cur) { next = o; break; }
-    if (o == cur) takeNext = true;
+    o.trim();
+    if (o.length()) pickOpts.push_back(o);
     i = p + 1;
   }
-  return next.length() ? next : first;
+  pickCur = -1;
+  for (unsigned k = 0; k < pickOpts.size(); k++)
+    if (pickOpts[k] == cur) { pickCur = k; break; }
+  pickItem = item;
+  pickOpen = true;
+  dirtyFull = true;
+}
+
+static void pickApply(int idx)
+{
+  if (idx < 0 || idx >= (int)pickOpts.size()) return;
+  String v = pickOpts[idx];
+  String err;
+  if (pickMode == 1)
+  {
+    if (cfgSet(pickItem, v, err)) showToast("已设为 " + v);
+    else showToast(err, 2600);
+  }
+  else if (pickMode == 2)   // 波特率：AT+BAUD1~7，成功后同步配置项
+  {
+    btmodApply(String("AT+BAUD") + String(idx + 1));
+    if (btmodLines.size())
+    {
+      int bi = cfgIndexOf("btmod.baud");
+      if (bi >= 0) { cfgSet(cfgAt(bi), v, err); showToast("AT 口波特率已设为 " + v, 2400); }
+    }
+  }
+  else if (pickMode == 3)   // 校验位：0无 1奇 2偶
+  {
+    btmodApply(String("AT+PARI") + String(idx));
+    if (btmodLines.size()) showToast("校验位已设为 " + v, 2200);
+  }
+  else if (pickMode == 4)   // 停止位：1位/2位
+  {
+    btmodApply(String("AT+STOP") + String(idx));
+    if (btmodLines.size()) showToast("停止位已设为 " + v, 2200);
+  }
+  pickOpen = false;
+  dirtyFull = true;
+}
+
+static void pickClose()
+{
+  pickOpen = false;
+  dirtyFull = true;
+}
+
+static void handlePickTouch(bool press, int x, int y)
+{
+  if (!press) return;
+  const int RH = 34, TW = 280;
+  int n = (int)pickOpts.size();
+  int h = 40 + n * RH + 10;
+  int top = (SCREEN_H - h) / 2;
+  if (x >= 30 && x <= 20 + TW - 10 && y >= top + 40 && y < top + 40 + n * RH)
+  {
+    int k = (y - top - 40) / RH;
+    if (k >= 0 && k < n) { pickApply(k); return; }
+  }
+  pickClose();   // 点弹窗外 = 取消
+}
+
+static void drawPickDialog()
+{
+  const int RH = 34, TW = 280;
+  int n = (int)pickOpts.size();
+  if (!n) { pickOpen = false; return; }
+  int h = 40 + n * RH + 10;
+  int top = (SCREEN_H - h) / 2;
+  gfx->fillRoundRect(20, top, TW, h, 12, COL_PANEL);
+  gfx->drawRoundRect(20, top, TW, h, 12, COL_ACCENT);
+  drawTextAt(32, top + 26, pickTitle, COL_SUB, COL_PANEL);
+  for (int k = 0; k < n; k++)
+  {
+    int ry = top + 40 + k * RH;
+    bool cur = (k == pickCur);
+    gfx->fillRoundRect(30, ry, TW - 20, RH - 6, 6, cur ? COL_ACCENT : COL_PANEL);
+    drawTextAt(42, ry + 20, pickOpts[k] + (cur ? String("  · 当前") : String()), cur ? 0xFFFF : COL_TEXT,
+               cur ? COL_ACCENT : COL_PANEL);
+  }
 }
 
 static void handleConfTouch(bool press, bool release, bool down, int x, int y)
 {
+  if (pickOpen) { handlePickTouch(press, x, y); return; }
   if (confIdx >= 0)
   {
     if (press)
@@ -789,11 +898,7 @@ static void handleConfTouch(bool press, bool release, bool down, int x, int y)
       }
       else if (it.type == CT_ENUM)
       {
-        String nv = confNextEnum(it);
-        String err;
-        if (cfgSet(it, nv, err)) showToast("已设为 " + nv);
-        else showToast(err, 2600);
-        dirtyFull = true;
+        pickOpenDlg(1, String("选择 ") + it.label, it.options, cfgGetRaw(it), it);
       }
       else
       {
@@ -809,6 +914,314 @@ static void handleConfTouch(bool press, bool release, bool down, int x, int y)
   }
 }
 
+
+// —— 蓝牙模块页（S_BTMOD）：BT04E 的 AT 配置（查询/波特率/校验/停止位/名称/重启/恢复出厂）——
+// AT 收发是阻塞式的（模块应答很快，正常 <200ms）；发之前先画一帧“执行中”再阻塞，避免像死机
+static int btmodScroll = 0;
+static String btmodStatus = "就绪";       // 底部一行状态提示
+static bool btmodNameEdit = false;        // 正在用键盘输入模块名称
+static String btmodNameDraft;
+static uint32_t btmodConfirmUntil = 0;    // 恢复出厂的二次确认截止时刻
+
+static const int BTMOD_TOP = 42;          // 信息面板
+static const int BTMOD_BOT = 192;
+static const char *BTMOD_BAUDS[7] = {"2400", "4800", "9600", "19200", "38400", "57600", "115200"};   // 对应 AT+BAUD1~7
+
+static void compose();   // 前置声明：AT 执行前先画一帧“执行中”
+
+static void btmodShow(const String &text)
+{
+  btmodLines.clear();
+  String t = text.length() ? text : String("(无响应)");
+  // 模块应答常带 \r\n，错误波特率下还会混入二进制；控制符会让 print() 回车/叠字，统一清洗
+  String clean;
+  clean.reserve(t.length() + 8);
+  for (unsigned i = 0; i < t.length(); i++)
+  {
+    char c = t[i];
+    if (c == '\n' || (uint8_t)c >= 0x20) clean += c;   // 丢弃 \r 及其他控制符
+  }
+  wrapLines(clean, 296, btmodLines);
+  btmodScroll = 0;
+}
+
+// 从响应里取 “+KEY=值” 的值（解析不到返回空）
+static String btmodField(const String &resp, const char *key)
+{
+  String pat = String("+") + key + "=";
+  int p = resp.indexOf(pat);
+  if (p < 0) return String();
+  int s = p + pat.length();
+  int e = s;
+  while (e < (int)resp.length() && resp[e] != '\r' && resp[e] != '\n') e++;
+  String v = resp.substring(s, e);
+  v.trim();
+  return v;
+}
+
+// 从 btmodInfo 的 JSON 里取字符串字段（解析不到返回空）
+static String btmodJsonStr(const String &j, const char *key)
+{
+  String pat = String("\"") + key + "\":\"";
+  int p = j.indexOf(pat);
+  if (p < 0) return String();
+  int s = p + pat.length();
+  int e = s;
+  while (e < (int)j.length() && j[e] != '"') e++;
+  return j.substring(s, e);
+}
+
+// 发一条 AT 命令并展示过程/应答
+static String btmodExec(const String &cmd)
+{
+  btmodStatus = "执行中 " + cmd + " ...";
+  dirtyFull = true;
+  compose();
+  String r = btmodCmd(cmd, 900);
+  bool ok = r.indexOf("OK") >= 0;
+  r.trim();
+  btmodStatus = String(ok ? "已发送 " : "无应答 ") + cmd;
+  btmodShow(cmd + " →\n" + (r.length() ? r : String("(无响应)")));
+  dirtyFull = true;
+  return r;
+}
+
+// 设置类命令：发命令 + 自动补 AT+RESET（BT04E 改参数后必须重启才生效）
+static void btmodApply(const String &cmd)
+{
+  String r = btmodExec(cmd);
+  if (r.indexOf("OK") < 0)
+  {
+    showToast("模块未确认，请检查接线/波特率", 2600);
+    return;
+  }
+  btmodExec("AT+RESET");
+  showToast("已写入，模块已重启", 1800);
+}
+
+// 查询模块信息（走 btmodInfo 一次会话查 6 项，再拼成人话）
+static void btmodQuery()
+{
+  btmodStatus = "正在查询模块...";
+  dirtyFull = true;
+  compose();
+  String j = btmodInfo();
+  btmodStatus = "查询完成";
+  String ver = btmodJsonStr(j, "version"), mac = btmodJsonStr(j, "mac"), nm = btmodJsonStr(j, "name");
+  String bd = btmodJsonStr(j, "baud"), pa = btmodJsonStr(j, "pari"), st = btmodJsonStr(j, "stop");
+  String text = "版本: " + (ver.length() ? ver : String("未应答"));
+  text += "\nMAC: " + (mac.length() ? mac : String("未应答"));
+  text += "\n名称: " + (nm.length() ? nm : String("未应答"));
+  text += "\n波特率: " + (bd.length() ? bd : String("未应答"));
+  text += "\n校验位: " + (pa.length() ? pa : String("未应答"));
+  text += "\n停止位: " + (st.length() ? st : String("未应答"));
+  btmodShow(text);
+  dirtyFull = true;
+}
+
+// 测试连接：只发一条 AT，按应答给出排错提示（电脑串口工具能通而 ESP32 不通时，多半是接线/波特率/被蓝牙占用）
+static void btmodTest()
+{
+  btmodStatus = "测试中：发送 AT ...";
+  dirtyFull = true;
+  compose();
+  String r = btmodCmd("AT", 600);
+  r.trim();
+  bool ok = r.indexOf("OK") >= 0;
+  if (ok)
+  {
+    btmodStatus = "连接正常，模块应答 OK";
+    btmodShow("AT → " + r);
+  }
+  else
+  {
+    btmodStatus = "无应答，按提示排查";
+    String tip = "AT → " + (r.length() ? r : String("(无响应)"));
+    tip += "\n\n排查顺序：\n1. 模块正被手机/电脑蓝牙连着（连着不响应 AT）";
+    tip += "\n2. RX/TX 是否交叉：模块TXD→GPIO42，RXD→GPIO41";
+    tip += "\n3. AT 口波特率与模块是否一致（配置项 btmod.baud，默认9600）";
+    tip += "\n4. 是否共地（GND）";
+    btmodShow(tip);
+  }
+  dirtyFull = true;
+  showToast(ok ? "连接正常" : "无应答", 1500);
+}
+
+// 设波特率/校验位/停止位：弹出选项列表直接选（原循环切换已废弃）
+static void btmodPickBaud()
+{
+  int i = cfgIndexOf("btmod.baud");
+  if (i < 0) return;
+  String opts;
+  for (int k = 0; k < 7; k++)
+  {
+    if (k) opts += "|";
+    opts += BTMOD_BAUDS[k];
+  }
+  pickOpenDlg(2, "选择波特率", opts, cfgGetRaw(cfgAt(i)));
+}
+
+static void btmodPickPari()
+{
+  String cur = btmodField(btmodExec("AT+PARI"), "PARI");
+  String c = (cur == "1") ? "奇校验" : (cur == "2") ? "偶校验" : "无校验";
+  pickOpenDlg(3, "选择校验位", "无校验|奇校验|偶校验", c);
+}
+
+static void btmodPickStop()
+{
+  String cur = btmodField(btmodExec("AT+STOP"), "STOP");
+  pickOpenDlg(4, "选择停止位", "1位|2位", (cur == "2") ? "2位" : "1位");
+}
+
+static void btmodNameLeave(bool save)
+{
+  releaseGuard = true;   // 取消/保存按钮的抬起不许落进下面的按钮区
+  if (save)
+  {
+    String nm = btmodNameDraft;
+    nm.trim();
+    if (!nm.length() || nm.length() > 28)
+    {
+      showToast("名称需 1~28 字节", 2400);   // 校验失败留在编辑态，用户可改
+      dirtyFull = true;
+      return;
+    }
+    btmodApply(String("AT+NAME") + nm);
+  }
+  btmodNameEdit = false;
+  kbReset();
+  kbAttach(&draft);
+  kbSetMask(false);
+  kbSetSendLabel("发送");
+  dirtyFull = true;
+}
+
+// 恢复出厂：3 秒内按两次才执行；AT 口波特率配置同步回 9600
+static void btmodFactory()
+{
+  if (millis() > btmodConfirmUntil)
+  {
+    btmodConfirmUntil = millis() + 3000;
+    showToast("再按一次确认恢复出厂", 2400);
+    dirtyFull = true;
+    return;
+  }
+  btmodConfirmUntil = 0;
+  btmodExec("AT+DEFAULT");
+  btmodExec("AT+RESET");
+  int i = cfgIndexOf("btmod.baud");
+  if (i >= 0) { String err; cfgSet(cfgAt(i), "9600", err); }
+  showToast("已恢复出厂（AT 口波特率回 9600）", 2600);
+}
+
+static void drawBtmodBody()
+{
+  if (btmodNameEdit)
+  {
+    drawTextAt(14, 58, "改模块名称", COL_SUB, COL_BG);
+    gfx->fillRoundRect(3, 70, 314, 40, 8, COL_PANEL);
+    String v = btmodNameDraft;
+    v += ((millis() / 500) & 1) ? "_" : "";
+    drawTextAt(12, centerBaseY(70, 40), fitTail(v, 290), COL_TEXT, COL_PANEL);
+    drawTextAt(14, 136, "输入后点保存，返回=取消（≤28 字节）", COL_SUB, COL_BG);
+    drawBtn(3, 246, 100, 44, "取消", COL_KEY_FN, COL_TEXT);
+    drawBtn(217, 246, 100, 44, "保存", COL_ACCENT, 0xFFFF);
+    return;
+  }
+
+  // 信息/应答面板（可拖动滚动）
+  gfx->fillRoundRect(3, BTMOD_TOP, 314, BTMOD_BOT - BTMOD_TOP, 8, COL_PANEL);
+  drawTextAt(12, BTMOD_TOP + 18, "模块信息 / AT 应答", COL_SUB, COL_PANEL);
+  if (!btmodLines.size())
+    drawTextAt(12, BTMOD_TOP + 44, "点「查模块信息」读取版本/MAC/名称等", COL_SUB, COL_PANEL);
+  else
+  {
+    int viewH = BTMOD_BOT - BTMOD_TOP - 34;
+    int maxScroll = max(0, (int)btmodLines.size() * LINE_H - viewH);
+    if (btmodScroll > maxScroll) btmodScroll = maxScroll;
+    if (btmodScroll < 0) btmodScroll = 0;
+    int i0 = max(0, (btmodScroll + LINE_H - 1) / LINE_H);
+    for (int i = i0; i < (int)btmodLines.size(); i++)
+    {
+      int ly = BTMOD_TOP + 30 + i * LINE_H - btmodScroll;
+      if (ly + LINE_H > BTMOD_BOT - 4) break;
+      drawTextAt(10, ly + 17, btmodLines[i], COL_TEXT, COL_PANEL);
+    }
+    drawScrollbar(SCREEN_W - 5, BTMOD_TOP + 30, viewH - 6, (int)btmodLines.size() * LINE_H, btmodScroll);
+  }
+
+  // 2×4 操作区（测试连接是排错第一步；恢复出厂半宽带二次确认）
+  drawBtn(3, 198, 154, 40, "测试连接", COL_ACCENT, 0xFFFF);
+  drawBtn(163, 198, 154, 40, "查模块信息", COL_KEY_FN, COL_TEXT);
+  drawBtn(3, 242, 154, 40, "设波特率", COL_KEY_FN, COL_TEXT);
+  drawBtn(163, 242, 154, 40, "设校验位", COL_KEY_FN, COL_TEXT);
+  drawBtn(3, 286, 154, 40, "设停止位", COL_KEY_FN, COL_TEXT);
+  drawBtn(163, 286, 154, 40, "改模块名称", COL_KEY_FN, COL_TEXT);
+  drawBtn(3, 330, 154, 40, "重启模块", COL_KEY_FN, COL_TEXT);
+  drawBtn(163, 330, 154, 40, (millis() < btmodConfirmUntil) ? "再按一次确认！" : "恢复出厂",
+          COL_ERR_BG, COL_ERR_TX);
+
+  drawTextAt(12, 424, btmodStatus, COL_SUB, COL_BG);
+  drawTextAt(12, 444, "AT 命令仅在模块无蓝牙连接时有效", COL_SUB, COL_BG);
+  drawTextAt(12, 464, "接线 TXD→42 / RXD→41，波特率见配置项", COL_SUB, COL_BG);
+}
+
+static void handleBtmodTouch(bool press, bool release, bool down, int x, int y)
+{
+  if (pickOpen) { handlePickTouch(press, x, y); return; }
+  if (btmodNameEdit)
+  {
+    if (press)
+    {
+      if (ptIn(x, y, 3, 4, 56, 28) || ptIn(x, y, 3, 246, 100, 44)) { btmodNameLeave(false); return; }
+      if (ptIn(x, y, 217, 246, 100, 44)) { btmodNameLeave(true); return; }
+    }
+    uint8_t ev = kbHandle(down, x, y);
+    if (ev & KB_CHANGED) dirtyFull = true;
+    if (ev & KB_SEND) btmodNameLeave(true);
+    return;
+  }
+
+  if (press)
+  {
+    if (ptIn(x, y, 3, 4, 56, 28)) { releaseGuard = true; gotoScreen(S_SETTINGS); return; }
+    if (ptIn(x, y, 3, 198, 154, 40)) { btmodTest(); return; }
+    if (ptIn(x, y, 163, 198, 154, 40)) { btmodQuery(); return; }
+    if (ptIn(x, y, 3, 242, 154, 40)) { btmodPickBaud(); return; }
+    if (ptIn(x, y, 163, 242, 154, 40)) { btmodPickPari(); return; }
+    if (ptIn(x, y, 3, 286, 154, 40)) { btmodPickStop(); return; }
+    if (ptIn(x, y, 163, 286, 154, 40))
+    {
+      btmodNameEdit = true;
+      kbAttach(&btmodNameDraft);
+      kbSetMask(false);
+      kbSetSendLabel("保存");
+      kbReset();
+      dirtyFull = true;
+      return;
+    }
+    if (ptIn(x, y, 3, 330, 154, 40)) { btmodExec("AT+RESET"); showToast("已发 AT+RESET", 1600); return; }
+    if (ptIn(x, y, 163, 330, 154, 40)) { btmodFactory(); return; }
+  }
+
+  // 信息面板拖动滚动
+  if (down && !press && y >= BTMOD_TOP && y < BTMOD_BOT)
+  {
+    if (!listDragging) { listDragging = true; dragStartY = y; scrollAtDragStart = btmodScroll; }
+    int dy = y - dragStartY;
+    if (dy)
+    {
+      int viewH = BTMOD_BOT - BTMOD_TOP - 34;
+      int maxScroll = max(0, (int)btmodLines.size() * LINE_H - viewH);
+      btmodScroll = scrollAtDragStart - dy;
+      if (btmodScroll < 0) btmodScroll = 0;
+      if (btmodScroll > maxScroll) btmodScroll = maxScroll;
+      dirtyFull = true;
+    }
+  }
+  if (!down) listDragging = false;
+}
 
 static void drawBmsBody()
 {
@@ -880,6 +1293,66 @@ static void drawBmsBody()
   drawTextAt(96, 378, String(I.balanceCurrent, 2) + " A", COL_TEXT, COL_PANEL);
 
   // 返回按钮
+  drawBtn(3, 440, 314, 40, "返回", COL_KEY_FN, COL_TEXT);
+}
+
+// —— 蓝牙中继页（S_RELAY）：主机连接蓝牙串口模块（BT04E），报文进「串口助手」并转发手机 ——
+static void drawRelayBody()
+{
+  bool on = relayEnabled();
+  gfx->fillRoundRect(3, 42, 314, 52, 8, COL_PANEL);
+  drawTextAt(12, 52, "模块连接", COL_SUB, COL_PANEL);
+  String st;
+  uint16_t sc = COL_SUB;
+  if (relayConnected()) { st = "已连接"; sc = COL_OK; }
+  else if (relayConnecting()) { st = "连接中.."; sc = COL_ACCENT; }
+  else if (relayScanActive()) { st = "扫描中.."; sc = COL_ACCENT; }
+  else st = "未连接";
+  drawTextAt(96, 52, st, sc, COL_PANEL);
+  drawTextAt(12, 76, "报文见「串口助手」页，并同步转发手机", COL_SUB, COL_PANEL);
+
+  drawBtn(3, 104, 154, 40, on ? "关闭中继" : "开启中继", on ? COL_ERR_BG : COL_OK, on ? COL_ERR_TX : 0xFFFF);
+  drawBtn(163, 104, 154, 40, "重新扫描", COL_KEY_FN, COL_TEXT);
+
+  if (relayConnected())
+  {
+    gfx->fillRoundRect(3, 156, 314, 100, 8, COL_PANEL);
+    drawTextAt(12, 176, "设备", COL_SUB, COL_PANEL);
+    drawTextAt(96, 176, fitTail(relayConnName(), 212), COL_TEXT, COL_PANEL);
+    bool p = relayPassOn();
+    drawTextAt(12, 200, "手机→模块透传", COL_SUB, COL_PANEL);
+    drawTextAt(296, 200, p ? "开" : "关", p ? COL_OK : COL_SUB, COL_PANEL);
+    int ti = cfgIndexOf("relay.tx");
+    String tgt = ti >= 0 ? cfgGetRaw(cfgAt(ti)) : String("手机+模块");
+    drawTextAt(12, 224, "发送目标 " + tgt + "（配置项可改）", COL_SUB, COL_PANEL);
+    drawBtn(3, 268, 154, 40, "查看报文", COL_ACCENT, 0xFFFF);
+    drawBtn(163, 268, 154, 40, "断开连接", COL_ERR_BG, COL_ERR_TX);
+    drawBtn(3, 440, 314, 40, "返回", COL_KEY_FN, COL_TEXT);
+    return;
+  }
+
+  // 未连接：可见扫描列表（同 BMS 页），点选连接
+  int n = relayScanCount();
+  if (relayConnecting())
+    drawTextAt(12, 164, "正在连接（最多 8 秒）…", COL_ACCENT, COL_BG);
+  else
+    drawTextAt(12, 164, String("周围蓝牙设备 ") + n + " 台，点选连接：", n ? COL_TEXT : COL_SUB, COL_BG);
+  int rowY = 186;
+  int shown = 0;
+  for (int i = 0; i < n && shown < 4; i++)
+  {
+    ScanItem it = relayScanAt(i);
+    String label = it.name.length() ? it.name : ("未命名 " + String(it.addr.toString().c_str()));
+    if (label.length() > 18) label = label.substring(0, 17) + "..";
+    gfx->fillRoundRect(3, rowY, 314, 38, 6, COL_PANEL);
+    drawTextAt(12, rowY + 11, label, it.match ? COL_OK : COL_TEXT, COL_PANEL);
+    String tail = String(it.rssi) + "dBm" + (it.match ? " [目标]" : "");
+    drawTextAt(314 - 12 - tail.length() * 12, rowY + 11, tail, COL_SUB, COL_PANEL);
+    rowY += 44;
+    shown++;
+  }
+  if (!n && !relayScanActive())
+    drawTextAt(12, rowY + 6, "开启中继后将自动扫描目标模块", COL_SUB, COL_BG);
   drawBtn(3, 440, 314, 40, "返回", COL_KEY_FN, COL_TEXT);
 }
 
@@ -1198,6 +1671,12 @@ static void drawBody()
   case S_CONF:
     drawConfBody();
     break;
+  case S_BTMOD:
+    drawBtmodBody();
+    break;
+  case S_RELAY:
+    drawRelayBody();
+    break;
   case S_MODELS:
     drawModelsBody();
     break;
@@ -1252,7 +1731,7 @@ static void drawConnectingOverlay()
 
 static bool kbVisible()
 {
-  return scr == S_CHAT || scr == S_WIFIPASS || (scr == S_API && editField >= 0) || scr == S_SERIAL || scr == S_OTAURL || (scr == S_CONF && confIdx >= 0);
+  return scr == S_CHAT || scr == S_WIFIPASS || (scr == S_API && editField >= 0) || scr == S_SERIAL || scr == S_OTAURL || (scr == S_CONF && confIdx >= 0) || (scr == S_BTMOD && btmodNameEdit);
 }
 
 static bool inputLineVisible()
@@ -1288,6 +1767,7 @@ static void compose()
   }
   if (wcConnecting && scr == S_WIFIPASS) { drawConnectingOverlay(); need = true; }
   if (dlgClear) { drawClearDialog(); need = true; }
+  if (pickOpen) { drawPickDialog(); need = true; }
   if (millis() < toastUntil) { drawToast(); need = true; }
   else if (needRestore) { needRestore = false; dirtyFull = true; }
   if (need) gfx->flush();
@@ -1365,21 +1845,23 @@ static void handleSettingsTouch(bool press, int x, int y)
 {
   if (!press) return;
   if (ptIn(x, y, 3, 4, 56, 28)) { releaseGuard = true; gotoScreen(S_HOME); return; }
-  if (ptIn(x, y, 3, 40, 314, 46)) { releaseGuard = true; scanStart(); gotoScreen(S_WIFI); return; }
-  if (ptIn(x, y, 3, 89, 314, 46)) { releaseGuard = true; gotoScreen(S_API); return; }
-  if (ptIn(x, y, 3, 138, 314, 46)) { releaseGuard = true; gotoScreen(S_BMS); return; }
-  if (ptIn(x, y, 3, 187, 314, 46)) { releaseGuard = true; gotoScreen(S_OTA); return; }
-  if (ptIn(x, y, 3, 236, 314, 46)) { releaseGuard = true; gotoScreen(S_STATUS); return; }
-  if (ptIn(x, y, 3, 285, 314, 46)) { releaseGuard = true; confScroll = 0; gotoScreen(S_CONF); return; }
-  if (ptIn(x, y, 3, 334, 314, 46)) { dlgClear = true; dirtyFull = true; return; }
-  if (ptIn(x, y, 3, 383, 314, 46))
+  if (ptIn(x, y, 3, 40, 314, 36)) { releaseGuard = true; scanStart(); gotoScreen(S_WIFI); return; }
+  if (ptIn(x, y, 3, 80, 314, 36)) { releaseGuard = true; gotoScreen(S_API); return; }
+  if (ptIn(x, y, 3, 120, 314, 36)) { releaseGuard = true; gotoScreen(S_BTMOD); return; }
+  if (ptIn(x, y, 3, 160, 314, 36)) { releaseGuard = true; gotoScreen(S_RELAY); return; }
+  if (ptIn(x, y, 3, 200, 314, 36)) { releaseGuard = true; gotoScreen(S_BMS); return; }
+  if (ptIn(x, y, 3, 240, 314, 36)) { releaseGuard = true; gotoScreen(S_OTA); return; }
+  if (ptIn(x, y, 3, 280, 314, 36)) { releaseGuard = true; gotoScreen(S_STATUS); return; }
+  if (ptIn(x, y, 3, 320, 314, 36)) { releaseGuard = true; confScroll = 0; gotoScreen(S_CONF); return; }
+  if (ptIn(x, y, 3, 360, 314, 36)) { dlgClear = true; dirtyFull = true; return; }
+  if (ptIn(x, y, 3, 400, 314, 36))
   {
     showToast("正在重启...");
     gfx->flush();
     delay(500);
     ESP.restart();
   }
-  if (ptIn(x, y, 3, 432, 314, 46)) { gotoScreen(S_HOME); }
+  if (ptIn(x, y, 3, 440, 314, 36)) { gotoScreen(S_HOME); }
 }
 
 static void handleWifiTouch(bool press, bool release, bool down, int x, int y)
@@ -1465,38 +1947,6 @@ static void handleWifiPassTouch(bool press, bool down, int x, int y)
       dirtyFull = true;
     }
   }
-}
-
-// AI 厂商循环切换：切换即套用预置 URL，并从记录恢复 key/model/模型列表
-static void apiVendorCycle()
-{
-  int vi = cfgIndexOf("ai.vendor");
-  if (vi < 0) return;
-  const CfgItem &it = cfgAt(vi);
-  String opts = it.options;
-  String cur = cfgGetRaw(it);
-  String next;
-  int i = 0;
-  bool takeNext = false;
-  while (i <= opts.length())
-  {
-    int p = opts.indexOf('|', i);
-    if (p < 0) p = opts.length();
-    String o = opts.substring(i, p);
-    if (takeNext) { next = o; break; }
-    if (o == cur) takeNext = true;
-    i = p + 1;
-  }
-  if (!next.length())
-  {
-    int fp = opts.indexOf('|');
-    next = fp < 0 ? opts : opts.substring(0, fp);
-  }
-  String err;
-  if (cfgSet(it, next, err))
-    showToast("厂商: " + next + (next != "自定义" ? "（自动填地址/密钥）" : ""), 2200);
-  else showToast(err, 2600);
-  dirtyFull = true;
 }
 
 // 拉取当前厂商的模型列表；manualFallback=失败时进入键盘手动输入模型
@@ -1594,6 +2044,7 @@ static void handleModelsTouch(bool press, bool release, bool down, int x, int y)
 
 static void handleApiTouch(bool press, bool down, int x, int y)
 {
+  if (pickOpen) { handlePickTouch(press, x, y); return; }
   if (editField >= 0)
   {
     if (press)
@@ -1609,7 +2060,16 @@ static void handleApiTouch(bool press, bool down, int x, int y)
   }
   if (!press) return;
   if (ptIn(x, y, 3, 4, 56, 28)) { gotoScreen(S_SETTINGS); return; }
-  if (ptIn(x, y, 3, 40, 314, 46)) { apiVendorCycle(); return; }
+  if (ptIn(x, y, 3, 40, 314, 46))   // 厂商：弹窗选择（原循环切换废弃）
+  {
+    int vi = cfgIndexOf("ai.vendor");
+    if (vi >= 0)
+    {
+      const CfgItem &it = cfgAt(vi);
+      pickOpenDlg(1, "选择 AI 厂商", it.options, cfgGetRaw(it), it);
+    }
+    return;
+  }
   if (ptIn(x, y, 3, 89, 314, 46)) { enterEdit(0); return; }   // 接口地址
   if (ptIn(x, y, 3, 138, 314, 46)) { enterEdit(2); return; }  // API Key
   if (ptIn(x, y, 3, 187, 314, 46)) { apiFetchModels(true); return; }  // 模型：有列表选列表，没有就拉
@@ -1870,7 +2330,50 @@ static void routeTouch(bool press, bool release, bool down, int x, int y)
   case S_OTAURL: handleOtaUrlTouch(press, down, x, y); break;
   case S_STATUS: handleStatusTouch(press, x, y); break;
   case S_CONF: handleConfTouch(press, release, down, x, y); break;
+  case S_BTMOD: handleBtmodTouch(press, release, down, x, y); break;
   case S_MODELS: handleModelsTouch(press, release, down, x, y); break;
+  case S_RELAY:
+    if (press)
+    {
+      if (ptIn(x, y, 3, 4, 56, 28)) { gotoScreen(S_HOME); return; }
+      if (ptIn(x, y, 3, 440, 314, 40)) { gotoScreen(S_HOME); return; }
+      if (ptIn(x, y, 3, 104, 154, 40))   // 中继开关
+      {
+        int i = cfgIndexOf("relay.on");
+        if (i >= 0)
+        {
+          String e;
+          bool turnOn = !relayEnabled();
+          cfgSet(cfgAt(i), turnOn ? "1" : "0", e);
+          if (turnOn) relayRescan();   // 开关刚打开就扫一轮，不用等 8 秒重扫定时
+        }
+        dirtyFull = true;
+        return;
+      }
+      if (ptIn(x, y, 163, 104, 154, 40)) { relayRescan(); dirtyFull = true; return; }
+      if (relayConnected())
+      {
+        if (ptIn(x, y, 3, 268, 154, 40)) { gotoScreen(S_SERIAL); return; }
+        if (ptIn(x, y, 163, 268, 154, 40)) { relayDisconnect(); dirtyFull = true; return; }
+      }
+      else   // 点列表行 → 连接该设备
+      {
+        int rowY = 186;
+        int n = relayScanCount();
+        for (int i = 0; i < n && i < 4; i++)
+        {
+          if (ptIn(x, y, 3, rowY, 314, 38))
+          {
+            ScanItem it = relayScanAt(i);
+            relayConnectAddr(it.addr);
+            dirtyFull = true;
+            return;
+          }
+          rowY += 44;
+        }
+      }
+    }
+    break;
   case S_BMS:
     if (press) {
       if (ptIn(x, y, 3, 4, 56, 28)) { gotoScreen(S_HOME); return; }
@@ -1960,6 +2463,8 @@ void setup()
   STK("wifi-mode");
   drawSplash("启动串口服务...");
   slBegin("ESP32-S3-AI");     // 建 server + NUS 服务（不广播）
+  drawSplash("初始化蓝牙中继...");
+  relayBegin();               // 蓝牙主机客户端（连蓝牙串口模块收报文）
   STK("ble");
   drawSplash("启动 OTA...");
   otaBleBegin();              // 建蓝牙 OTA 服务（不广播）
@@ -2005,6 +2510,8 @@ void loop()
   static bool stLogged = false;
   if (!stLogged) { stLogged = true; STK("loop-first"); }
 
+  btmodDebugPump();   // AT 口调试模式开启时，及时收取 41/42 上的字节
+
   TouchPoint tp;
   bool down = touchRead(tp) && tp.pressed;
   int x, y;
@@ -2042,12 +2549,20 @@ void loop()
   otaPoll();
   otaHttpPoll();   // 把 WiFi 升级地址同步到蓝牙"信息"特征，网页据此自动填 IP
   bms::poll();
+  relayPoll();
 
   // BMS 扫描页：列表实时在变，未连接时每 500ms 重绘一次
   if (scr == S_BMS && !bms::hasData())
   {
     static uint32_t lastBmsMs = 0;
     if (millis() - lastBmsMs > 500) { lastBmsMs = millis(); dirtyFull = true; }
+  }
+
+  // 蓝牙中继页：扫描/连接状态实时在变，未连接时每 500ms 重绘一次
+  if (scr == S_RELAY && !relayConnected())
+  {
+    static uint32_t lastRelayMs = 0;
+    if (millis() - lastRelayMs > 500) { lastRelayMs = millis(); dirtyFull = true; }
   }
 
   uint8_t os = (uint8_t)otaState();

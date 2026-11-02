@@ -43,6 +43,19 @@ static const CfgItem TABLE[] = {
     {"ota.url", "固件升级", "URL 升级地址", CT_STR, 0, 0, nullptr, 0, ""},
     {"web.pin", "安全", "网页需要 PIN", CT_BOOL, 0, 0, nullptr, 0, "0"},
     {"log.http", "调试", "网页日志", CT_BOOL, 0, 0, nullptr, 0, "1"},
+    // BT04E 蓝牙模块的 AT 口：按需开关 UART2，改完即存即生效（无需重启）
+    {"btmod.tx", "蓝牙模块", "AT 口 TX 引脚", CT_INT, 1, 48, nullptr, 0, "41"},
+    {"btmod.rx", "蓝牙模块", "AT 口 RX 引脚", CT_INT, 1, 48, nullptr, 0, "42"},
+    {"btmod.baud", "蓝牙模块", "AT 口波特率", CT_ENUM, 0, 0, "2400|4800|9600|19200|38400|57600|115200", 0, "9600"},
+    // 串口收发编码：发送按 txenc 编码上链路，接收显示按 rxenc 解码（HEX 模式不受影响）
+    {"serial.txenc", "编码", "发送编码", CT_ENUM, 0, 0, "UTF-8|ASCII|GBK|GB2312|UNICODE", 0, "UTF-8"},
+    {"serial.rxenc", "编码", "接收编码", CT_ENUM, 0, 0, "UTF-8|ASCII|GBK|GB2312|UNICODE", 0, "UTF-8"},
+    {"serial.bom", "编码", "UNICODE 带 BOM", CT_BOOL, 0, 0, nullptr, 0, "0"},
+    // 蓝牙中继：ESP32 作主机连蓝牙串口模块收报文，转发屏幕 + 手机
+    {"relay.on", "蓝牙中继", "中继开关", CT_BOOL, 0, 0, nullptr, 0, "0"},
+    {"relay.name", "蓝牙中继", "目标名称前缀", CT_STR, 0, 0, nullptr, 0, "BT04E"},
+    {"relay.pass", "蓝牙中继", "串口透传(手机→模块)", CT_BOOL, 0, 0, nullptr, 0, "0"},
+    {"relay.tx", "蓝牙中继", "屏幕发送目标", CT_ENUM, 0, 0, "手机+模块|仅手机|仅模块", 0, "手机+模块"},
 };
 #define TABLE_N (sizeof(TABLE) / sizeof(TABLE[0]))
 
@@ -50,6 +63,13 @@ static bool gPinReq = false;   // web.pin 当前值（cfgInit 时从 NVS 载入�
 static uint16_t gPin = 0;      // 本次开机随机 PIN
 static String gAiVendor = "自定义";  // 当前厂商
 static String gModels;               // 当前厂商的模型列表缓存（'\n' 分隔）
+// 中继开关走内存镜像：relayPoll 每圈都要查，直读 NVS 太贵
+static bool gRelayOn = false;
+static bool gRelayPass = false;
+// 编码设置内存镜像：收发路径每帧都要查
+static String gTxEnc = "UTF-8";
+static String gRxEnc = "UTF-8";
+static bool gUniBom = false;
 
 void cfgInit()
 {
@@ -57,6 +77,11 @@ void cfgInit()
   p.begin("cfg", true);
   gPinReq = p.getBool("web.pin", false);
   gAiVendor = p.getString("ai.vendor", "自定义");
+  gRelayOn = p.getBool("relay.on", false);
+  gRelayPass = p.getBool("relay.pass", false);
+  gTxEnc = p.getString("serial.txenc", "UTF-8");
+  gRxEnc = p.getString("serial.rxenc", "UTF-8");
+  gUniBom = p.getBool("serial.bom", false);
   p.end();
   // 记住过的厂商恢复其 url/key/model/模型列表
   if (gAiVendor != "自定义")
@@ -111,6 +136,29 @@ String cfgGetRaw(const CfgItem &it)
     bool on = p.getBool("log.http", true);
     p.end();
     return on ? "1" : "0";
+  }
+  if (!strcmp(it.key, "btmod.tx") || !strcmp(it.key, "btmod.rx") || !strcmp(it.key, "btmod.baud"))
+  {
+    Preferences p;
+    p.begin("cfg", true);
+    String def = !strcmp(it.key, "btmod.tx") ? "41" : !strcmp(it.key, "btmod.rx") ? "42" : "9600";
+    String v = p.getString(it.key, def);
+    p.end();
+    return v;
+  }
+  if (!strcmp(it.key, "relay.on")) return gRelayOn ? "1" : "0";
+  if (!strcmp(it.key, "relay.pass")) return gRelayPass ? "1" : "0";
+  if (!strcmp(it.key, "serial.txenc")) return gTxEnc;
+  if (!strcmp(it.key, "serial.rxenc")) return gRxEnc;
+  if (!strcmp(it.key, "serial.bom")) return gUniBom ? "1" : "0";
+  if (!strcmp(it.key, "relay.name") || !strcmp(it.key, "relay.tx"))
+  {
+    Preferences p;
+    p.begin("cfg", true);
+    String def = !strcmp(it.key, "relay.name") ? "BT04E" : "手机+模块";
+    String v = p.getString(it.key, def);
+    p.end();
+    return v;
   }
   return String();
 }
@@ -208,9 +256,67 @@ bool cfgSet(const CfgItem &it, const String &val, String &err)
     p.putBool("log.http", v == "1");
     p.end();
   }
+  else if (!strcmp(it.key, "btmod.tx") || !strcmp(it.key, "btmod.rx") || !strcmp(it.key, "btmod.baud"))
+  {
+    Preferences p;
+    p.begin("cfg", false);
+    p.putString(it.key, v);
+    p.end();
+  }
+  else if (!strcmp(it.key, "relay.on"))
+  {
+    gRelayOn = (v == "1");
+    Preferences p;
+    p.begin("cfg", false);
+    p.putBool(it.key, gRelayOn);
+    p.end();
+  }
+  else if (!strcmp(it.key, "relay.pass"))
+  {
+    gRelayPass = (v == "1");
+    Preferences p;
+    p.begin("cfg", false);
+    p.putBool(it.key, gRelayPass);
+    p.end();
+  }
+  else if (!strcmp(it.key, "relay.name") || !strcmp(it.key, "relay.tx"))
+  {
+    Preferences p;
+    p.begin("cfg", false);
+    p.putString(it.key, v);
+    p.end();
+  }
+  else if (!strcmp(it.key, "serial.txenc"))
+  {
+    gTxEnc = v;
+    Preferences p;
+    p.begin("cfg", false);
+    p.putString(it.key, v);
+    p.end();
+  }
+  else if (!strcmp(it.key, "serial.rxenc"))
+  {
+    gRxEnc = v;
+    Preferences p;
+    p.begin("cfg", false);
+    p.putString(it.key, v);
+    p.end();
+  }
+  else if (!strcmp(it.key, "serial.bom"))
+  {
+    gUniBom = (v == "1");
+    Preferences p;
+    p.begin("cfg", false);
+    p.putBool(it.key, gUniBom);
+    p.end();
+  }
   else { err = "未映射的配置项"; return false; }
   return true;
 }
+
+String cfgTxEnc() { return gTxEnc; }
+String cfgRxEnc() { return gRxEnc; }
+bool cfgUniBom() { return gUniBom; }
 
 String cfgJsonEsc(const String &s)
 {

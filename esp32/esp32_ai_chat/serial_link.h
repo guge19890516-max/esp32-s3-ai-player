@@ -18,6 +18,11 @@ String slBleAddr();
 bool slBleAdvActive();
 const char *slDeviceName();
 bool slSend(const String &s);
+bool slSendRaw(const uint8_t *d, int n);   // 二进制转发到手机（蓝牙中继透传用，与 slSend 同队列）
+
+// 收到手机/串口数据的钩子（slPoll 上下文，BLE/TCP 通用）：蓝牙中继反向透传在这里接
+typedef void (*slRxHook_t)(const uint8_t *d, int n);
+void slSetRxHook(slRxHook_t fn);
 String slLocalIp();
 void slOtaSuspend();
 void slOtaResume();

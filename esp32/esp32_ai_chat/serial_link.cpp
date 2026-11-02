@@ -59,6 +59,9 @@ static TaskHandle_t slLoopTask = nullptr;   // loop 任务句柄（slPoll 首次
 static QueueHandle_t txQ = nullptr;
 static uint32_t lastTxMs = 0;
 static uint8_t tcpRxBuf[1024];
+static slRxHook_t rxHook = nullptr;
+
+void slSetRxHook(slRxHook_t fn) { rxHook = fn; }
 
 class RxCb : public NimBLECharacteristicCallbacks
 {
@@ -76,6 +79,18 @@ class RxCb : public NimBLECharacteristicCallbacks
 class SrvCb : public NimBLEServerCallbacks
 {
   void onConnect(NimBLEServer *s) override { bleConnected = true; }
+  // 浏览器/系统连上后默认常给 ~100ms+ 的连接间隔且每次事件只发一包，
+  // 这是蓝牙 OTA 只有 ~2KB/s 的主因（240B × 8 次/秒 ≈ 2KB/s）。
+  // 主动请求 15~30ms + 零从机延迟，速度可提 5~10 倍。
+  void onConnect(NimBLEServer *s, ble_gap_conn_desc *desc) override
+  {
+    bleConnected = true;
+    s->updateConnParams(desc->conn_handle,
+                        12,    // 最小间隔 15ms（单位 1.25ms）
+                        24,    // 最大间隔 30ms
+                        0,     // 从机延迟
+                        400);  // 监督超时 4s（单位 10ms）
+  }
   void onDisconnect(NimBLEServer *s) override
   {
     bleConnected = false;
@@ -321,8 +336,12 @@ String slStatus()
 bool slSend(const String &s)
 {
   if (!s.length()) return false;
-  const uint8_t *d = (const uint8_t *)s.c_str();
-  int n = s.length();
+  return slSendRaw((const uint8_t *)s.c_str(), s.length());
+}
+
+bool slSendRaw(const uint8_t *d, int n)
+{
+  if (!d || n <= 0) return false;
   if (mode == LINK_BLE)
   {
     if (!bleConnected || !txChar || !txQ) return false;
@@ -415,6 +434,7 @@ void slPoll()
     while (xQueueReceive(rxQ, &it, 0) == pdTRUE)
     {
       if (mode == LINK_BLE) flAddRx(it.data, it.len);
+      if (rxHook) rxHook(it.data, it.len);
     }
   }
 

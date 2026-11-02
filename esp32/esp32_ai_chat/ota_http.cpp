@@ -1,6 +1,7 @@
 #include "ota_http.h"
 #include "ota_update.h"
 #include "cfg_table.h"
+#include "bt_module.h"
 #include "log_tee.h"
 
 #include <WiFi.h>
@@ -112,10 +113,9 @@ static String headerStr(const String &head, const char *name)
 
 // ---- 配置接口（/api/*）辅助 ----
 
-static bool pinOk(const String &head)
+static bool pinOkVal(const String &p)
 {
   if (!cfgWebPinRequired()) return true;
-  String p = headerStr(head, "X-Pin");
   char want[8];
   snprintf(want, sizeof(want), "%04u", (unsigned)cfgPin());
   return p == want;
@@ -188,30 +188,14 @@ static bool readBody(WiFiClient &c, int len, String &body)
   return (int)body.length() >= len;
 }
 
-static void handleSettingsPost(WiFiClient &c, const String &head)
+static void apiSettingsPost(const String &body, int &code, String &out)
 {
-  if (!pinOk(head))
-  {
-    reply(c, 401, "{\"err\":\"需要 PIN\"}");
-    return;
-  }
-  int cl = headerInt(head, "Content-Length");
-  if (cl <= 0)
-  {
-    reply(c, 400, "{\"err\":\"no content-length\"}");
-    return;
-  }
-  String body;
-  if (!readBody(c, cl, body))
-  {
-    reply(c, 400, "{\"err\":\"body 不完整\"}");
-    return;
-  }
   String k = formParam(body, "k");
   String v = formParam(body, "v");
   if (!k.length())
   {
-    reply(c, 400, "{\"err\":\"缺少 k\"}");
+    code = 400;
+    out = "{\"err\":\"缺少 k\"}";
     return;
   }
   for (int i = 0; i < cfgCount(); i++)
@@ -222,18 +206,277 @@ static void handleSettingsPost(WiFiClient &c, const String &head)
       String err;
       if (cfgSet(it, v, err))
       {
-        String out = "{\"ok\":true,\"v\":\"" + cfgJsonEsc(cfgGetShow(it)) + "\"}";
-        reply(c, 200, out.c_str());
+        code = 200;
+        out = "{\"ok\":true,\"v\":\"" + cfgJsonEsc(cfgGetShow(it)) + "\"}";
       }
       else
       {
-        String out = "{\"err\":\"" + cfgJsonEsc(err) + "\"}";
-        reply(c, 400, out.c_str());
+        code = 400;
+        out = "{\"err\":\"" + cfgJsonEsc(err) + "\"}";
       }
       return;
     }
   }
-  reply(c, 404, "{\"err\":\"未知的配置项\"}");
+  code = 404;
+  out = "{\"err\":\"未知的配置项\"}";
+}
+
+// 从 JSON body 里抠字符串字段（处理常见转义），抠不到返回空
+static String jsonStrVal(const String &body, const char *key)
+{
+  String pat = String("\"") + key + "\"";
+  int p = body.indexOf(pat);
+  if (p < 0) return String();
+  int colon = body.indexOf(':', p + pat.length());
+  if (colon < 0) return String();
+  int i = colon + 1;
+  while (i < (int)body.length() && body[i] == ' ') i++;
+  if (i >= (int)body.length() || body[i] != '"') return String();
+  i++;
+  String o;
+  while (i < (int)body.length())
+  {
+    char c = body[i];
+    if (c == '\\' && i + 1 < (int)body.length())
+    {
+      char n = body[i + 1];
+      if (n == '"') o += '"';
+      else if (n == '\\') o += '\\';
+      else if (n == 'n') o += '\n';
+      else if (n == 'r') o += '\r';
+      else if (n == 't') o += '\t';
+      else o += n;
+      i += 2;
+      continue;
+    }
+    if (c == '"') break;
+    o += c;
+    i++;
+  }
+  return o;
+}
+
+// POST /api/btmod：body {"cmd":"AT+BAUD7"}（也兼容表单 cmd=...）。
+// 白名单：AT 开头、无控制字符、无引号反斜杠、≤64 字节；设置类命令成功后自动补发 AT+RESET
+static void apiBtmodPost(const String &body, int &code, String &out)
+{
+  String cmd = formParam(body, "cmd");
+  if (!cmd.length()) cmd = jsonStrVal(body, "cmd");
+  cmd.trim();
+  bool ok = cmd.length() >= 2 && cmd.length() <= 64 && cmd.startsWith("AT");
+  for (unsigned i = 0; ok && i < cmd.length(); i++)
+  {
+    char c = cmd[i];
+    if (c < 0x20 || c == '"' || c == '\\') ok = false;   // 防注入：命令里不允许控制字符/引号/反斜杠
+  }
+  if (!ok)
+  {
+    code = 400;
+    out = "{\"err\":\"命令不合法：需 AT 开头、无控制字符、≤64 字节\"}";
+    return;
+  }
+  logTeePrintf("[btmod] api POST cmd=%s（AT 仅在模块无蓝牙连接时有效）\n", cmd.c_str());
+  String resp = btmodCmd(cmd, 900);
+  bool done = resp.indexOf("OK") >= 0;
+  if (done && btmodNeedsReset(cmd))
+  {
+    String r2 = btmodCmd("AT+RESET", 900);
+    r2.trim();
+    resp += "\n[已补发 AT+RESET] " + (r2.length() ? r2 : String("(无响应)"));
+  }
+  resp.trim();
+  code = 200;
+  out = "{\"ok\":" + String(done ? "true" : "false") + ",\"resp\":\"" + cfgJsonEsc(resp) + "\"}";
+}
+
+// 统一 API 分发：HTTP（handleClient）与蓝牙控制台（ota_update.cpp 的 conTask）共用。
+bool otaApiDispatch(const String &method, const String &path, const String &pin,
+                    const String &body, bool viaBle, int &code, String &out, bool &isText)
+{
+  isText = false;
+  // caps 不做 PIN 校验：网页要先从它拿到 pinreq 才知道要不要输 PIN，
+  // 且它只暴露固件版本与能力列表，不泄露配置。
+  if (method == "GET" && path.startsWith("/api/caps"))
+  {
+    code = 200;
+    out = "{\"api\":1,\"fw\":\"" FW_VERSION "\",\"caps\":[\"settings\",\"status\"],\"pinreq\":";
+    out += cfgWebPinRequired() ? "true" : "false";
+    out += "}";
+    return true;
+  }
+  if (method == "GET" && path.startsWith("/api/settings"))
+  {
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    cfgBuildSettingsJson(out);
+    code = 200;
+    return true;
+  }
+  if (method == "POST" && path.startsWith("/api/settings"))
+  {
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    apiSettingsPost(body, code, out);
+    return true;
+  }
+  if (method == "GET" && path.startsWith("/api/status"))
+  {
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    cfgBuildStatusJson(out);
+    code = 200;
+    return true;
+  }
+  if (method == "GET" && path.startsWith("/api/wifi"))
+  {
+    // 附近的 WiFi 列表（网页配网点选用）：首次调用触发异步扫描并回 scanning=true，
+    // 之后轮询直到出结果；scan=1 可在结果出来后再要一次新的
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    static uint32_t apScanT0 = 0;
+    int sc = WiFi.scanComplete();
+    bool running = (sc == WIFI_SCAN_RUNNING);
+    if (!running && sc < 0)   // 从没扫过或上次失败 → 启动异步扫描
+    {
+      if (WiFi.status() != WL_CONNECTED)
+      {
+        // STA 在自动重连/连接中时扫描会返回 ESP_ERR_WIFI_STATE，先释放
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, false);
+      }
+      sc = WiFi.scanNetworks(true, false, false, 120u);
+      apScanT0 = millis();
+      running = (sc == WIFI_SCAN_RUNNING);
+      logTeePrintf("[http] wifi scan start -> %d\n", sc);
+    }
+    if (running && millis() - apScanT0 > 12000)
+    {
+      WiFi.scanDelete();
+      out = "{\"scanning\":false,\"err\":\"扫描超时，请重试\"}";
+    }
+    else if (running)
+      out = "{\"scanning\":true,\"aps\":[]}";
+    else if (sc < 0)
+      out = "{\"scanning\":false,\"err\":\"扫描失败，请重试\"}";
+    else
+    {
+      // 去重（同名取最强）、按信号降序、最多 20 条，隐藏网络（空名）跳过
+      if (sc > 40) sc = 40;
+      String ss[40];
+      int8_t rr[40];
+      bool lk[40];
+      int m = 0;
+      for (int i = 0; i < sc; i++)
+      {
+        String s = WiFi.SSID(i);
+        if (!s.length()) continue;
+        int8_t r = WiFi.RSSI(i);
+        bool l = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+        int j;
+        for (j = 0; j < m; j++)
+          if (ss[j] == s) break;
+        if (j < m) { if (r > rr[j]) { rr[j] = r; lk[j] = l; } continue; }
+        if (m >= 40) continue;
+        ss[m] = s; rr[m] = r; lk[m] = l;
+        m++;
+      }
+      for (int i = 1; i < m; i++)   // 插入排序按 RSSI 降序
+      {
+        String s = ss[i]; int8_t r = rr[i]; bool l = lk[i];
+        int j = i - 1;
+        while (j >= 0 && rr[j] < r)
+        {
+          ss[j + 1] = ss[j]; rr[j + 1] = rr[j]; lk[j + 1] = lk[j];
+          j--;
+        }
+        ss[j + 1] = s; rr[j + 1] = r; lk[j + 1] = l;
+      }
+      if (m > 20) m = 20;
+      out = "{\"scanning\":false,\"aps\":[";
+      for (int i = 0; i < m; i++)
+      {
+        if (i) out += ",";
+        out += "{\"s\":\"" + cfgJsonEsc(ss[i]) + "\",\"r\":" + String((int)rr[i]) +
+               ",\"l\":" + (lk[i] ? "true" : "false") + "}";
+      }
+      out += "]}";
+    }
+    code = 200;
+    return true;
+  }
+  if (method == "GET" && path.startsWith("/api/logs"))
+  {
+    // 「网页日志」开关管的是 HTTP 暴露面；蓝牙控制台不受它限制——
+    // 设备没连 WiFi 时用户多半正需要日志排障。PIN 校验照常。
+    if (!viaBle && !cfgFlag("log.http")) { code = 404; out = "{\"err\":\"网页日志已关闭\"}"; return true; }
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    if (path.indexOf("clear=1") >= 0)
+    {
+      logTeeClear();
+      code = 200;
+      out = "(已清空)\n";
+      isText = true;
+      return true;
+    }
+    out = logTeeDump(24000);
+    if (!out.length()) out = "(暂无日志)\n";
+    code = 200;
+    isText = true;
+    return true;
+  }
+  if (method == "GET" && path.startsWith("/api/btmod"))
+  {
+    // 查询 BT04E 模块信息（版本/MAC/名称/波特率/校验/停止位）
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    out = btmodInfo();
+    code = 200;
+    return true;
+  }
+  if (method == "POST" && path.startsWith("/api/btmod"))
+  {
+    // 给 BT04E 发 AT 命令（白名单 + PIN 校验，与 /api/settings 一致）
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    apiBtmodPost(body, code, out);
+    return true;
+  }
+  if (method == "POST" && path.startsWith("/api/dbg"))
+  {
+    // AT 口原始收发调试：?on=1 打开 / ?off=1 关闭；否则 body {"data":"..","hex":0|1} 发原始字节
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    String q = path;
+    int qi = q.indexOf('?');
+    q = (qi >= 0) ? q.substring(qi + 1) : String();
+    if (q.indexOf("on=1") >= 0)
+    {
+      bool ok = btmodDebug(true);
+      code = ok ? 200 : 500;
+      out = String("{\"ok\":") + (ok ? "true" : "false") + "}";
+      return true;
+    }
+    if (q.indexOf("off=1") >= 0)
+    {
+      btmodDebug(false);
+      code = 200;
+      out = "{\"ok\":true}";
+      return true;
+    }
+    String data = jsonStrVal(body, "data");
+    bool hexMode = body.indexOf("\"hex\":1") >= 0 || body.indexOf("\"hex\":true") >= 0;
+    String err;
+    size_t n = btmodDebugSend(data, hexMode, err);
+    if (err.length()) { code = 400; out = "{\"err\":\"" + cfgJsonEsc(err) + "\"}"; return true; }
+    code = 200;
+    out = String("{\"ok\":true,\"n\":") + String((unsigned)n) + "}";
+    return true;
+  }
+  if (method == "GET" && path.startsWith("/api/dbg"))
+  {
+    // 取走调试口收到的字节（HEX），并报告调试口状态
+    if (!pinOkVal(pin)) { code = 401; out = "{\"err\":\"需要 PIN\"}"; return true; }
+    String rx = btmodDebugRecvHex();
+    code = 200;
+    out = String("{\"on\":") + (btmodDebugOn() ? "true" : "false");
+    out += ",\"total\":" + String((unsigned long)btmodDebugRxCount());
+    out += ",\"rx\":\"" + rx + "\"}";
+    return true;
+  }
+  return false;
 }
 
 static void handlePost(WiFiClient &c, const String &head)
@@ -343,48 +586,33 @@ static void handleClient(WiFiClient &c)
   {
     handlePost(c, head);
   }
-  // ---- 网页控制台 API（P1）----
-  // caps 不做 PIN 校验：网页要先从它拿到 pinreq 才知道要不要输 PIN，
-  // 且它只暴露固件版本与能力列表，不泄露配置。
-  else if (head.startsWith("GET /api/caps"))
+  // ---- 网页控制台 API（与蓝牙控制台共用 otaApiDispatch）----
+  else if (head.startsWith("GET /api/") || head.startsWith("POST /api/"))
   {
-    String out = "{\"api\":1,\"fw\":\"" FW_VERSION "\",\"caps\":[\"settings\",\"status\"],\"pinreq\":";
-    out += cfgWebPinRequired() ? "true" : "false";
-    out += "}";
-    reply(c, 200, out.c_str());
-  }
-  else if (head.startsWith("GET /api/settings"))
-  {
-    if (!pinOk(head)) { reply(c, 401, "{\"err\":\"需要 PIN\"}"); return; }
-    String out;
-    cfgBuildSettingsJson(out);
-    reply(c, 200, out.c_str());
-  }
-  else if (head.startsWith("POST /api/settings"))
-  {
-    handleSettingsPost(c, head);
-  }
-  else if (head.startsWith("GET /api/status"))
-  {
-    if (!pinOk(head)) { reply(c, 401, "{\"err\":\"需要 PIN\"}"); return; }
-    String out;
-    cfgBuildStatusJson(out);
-    reply(c, 200, out.c_str());
-  }
-  else if (head.startsWith("GET /api/logs"))
-  {
-    // 网页日志：浏览器直接开 http://设备IP:8080/api/logs；开关 = 设置→配置项→调试「网页日志」
-    if (!cfgFlag("log.http")) { reply(c, 404, "{\"err\":\"网页日志已关闭\"}"); return; }
-    if (!pinOk(head)) { reply(c, 401, "{\"err\":\"需要 PIN\"}"); return; }
-    if (head.indexOf("clear=1") >= 0)
+    bool isGet = head.startsWith("GET");
+    int sp1 = head.indexOf(' ');
+    int sp2 = head.indexOf(' ', sp1 + 1);
+    String path = head.substring(sp1 + 1, sp2);
+
+    String body;
+    if (!isGet)
     {
-      logTeeClear();
-      replyText(c, "(已清空)\n");
-      return;
+      int cl = headerInt(head, "Content-Length");
+      if (cl < 0) cl = 0;   // 未带 Content-Length 视为空 body（如 /api/dbg?on=1 的开关调用）
+      if (cl > 0 && !readBody(c, cl, body)) { reply(c, 400, "{\"err\":\"body 不完整\"}"); return; }
     }
-    String out = logTeeDump(24000);
-    if (!out.length()) out = "(暂无日志)\n";
-    replyText(c, out.c_str());
+
+    int code;
+    String out;
+    bool isText = false;
+    if (otaApiDispatch(isGet ? "GET" : "POST", path, headerStr(head, "X-Pin"),
+                       body, false, code, out, isText))
+    {
+      if (isText) replyText(c, out.c_str());
+      else reply(c, code, out.c_str());
+    }
+    else
+      reply(c, 400, "{\"err\":\"unknown path\"}");
   }
   else
   {

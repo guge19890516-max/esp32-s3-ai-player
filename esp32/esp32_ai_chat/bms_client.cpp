@@ -1,5 +1,6 @@
 #include "bms_client.h"
 #include "serial_link.h"
+#include "ble_relay.h"
 #include <NimBLEClient.h>
 #include <NimBLEAdvertisedDevice.h>
 #include <NimBLEUtils.h>
@@ -151,6 +152,7 @@ void poll()
 
   if (!connectedFlag)
   {
+    if (relayScanActive()) return;   // 蓝牙中继正在扫描：让出扫描器，中继结束后自动恢复
     if (NimBLEDevice::getScan()->isScanning()) return;
     NimBLEScan *scan = NimBLEDevice::getScan();
     scan->setAdvertisedDeviceCallbacks(&scanCb);

@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-#define FW_VERSION "1.2.9"
+#define FW_VERSION "1.3.1"
 
 enum OtaState : uint8_t { OST_IDLE, OST_RUNNING, OST_DONE, OST_FAIL };
 

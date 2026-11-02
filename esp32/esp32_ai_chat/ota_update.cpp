@@ -1,5 +1,6 @@
 #include "ota_update.h"
 #include "serial_link.h"
+#include "ota_http.h"
 #include "ui.h"
 #include "log_tee.h"
 #include "board_config.h"
@@ -402,6 +403,107 @@ static const char *BLE_OTA_TX = "5f9b0003-7a2c-4d3e-9c1e-9b6f5c1a2d01";
 // 只读"信息"特征：内容形如 http://192.168.1.23:8080/ota ，网页连上后自动读取并填好 IP
 static const char *BLE_OTA_INFO = "5f9b0004-7a2c-4d3e-9c1e-9b6f5c1a2d01";
 
+// ---------------------------------------------------------------------------
+// 蓝牙控制台（Web Bluetooth）：设备没连 WiFi 时网页也能读写配置/看状态/看日志。
+//   RX 5f9b0005-... 网页 -> 设备，请求帧：seq\nMETHOD\npath\npin\nlen\n + len 字节 body
+//   TX 5f9b0006-... 设备 -> 网页，应答帧：seq\ncode\nlen\n + len 字节 payload
+// path/body 与 HTTP 接口完全一致（/api/caps、/api/settings、/api/status、/api/logs），
+// 复用 otaApiDispatch，网页端两个通道行为相同。帧体可能分多次写入，按 \n 头 + 长度拼帧。
+// ---------------------------------------------------------------------------
+static const char *BLE_CON_RX = "5f9b0005-7a2c-4d3e-9c1e-9b6f5c1a2d01";
+static const char *BLE_CON_TX = "5f9b0006-7a2c-4d3e-9c1e-9b6f5c1a2d01";
+static String conAcc;                    // 请求帧累积缓冲（网页可能分多次 write）
+static QueueHandle_t conQ = nullptr;     // 元素为 malloc 的完整请求帧指针
+static NimBLECharacteristic *conTx = nullptr;
+
+static void conTryParse()
+{
+  for (;;)
+  {
+    if (!conAcc.length()) return;
+    // 头部 5 行：seq / METHOD / path / pin / len
+    int p[5];
+    int pos = 0;
+    bool ok = true;
+    for (int i = 0; i < 5; i++)
+    {
+      p[i] = conAcc.indexOf('\n', pos);
+      if (p[i] < 0) { ok = false; break; }
+      pos = p[i] + 1;
+    }
+    if (!ok) return;
+    int blen = conAcc.substring(p[3] + 1, p[4]).toInt();
+    if (blen < 0 || blen > 4096) { conAcc = ""; return; }   // 坏帧，丢弃重来
+    if ((int)conAcc.length() < p[4] + 1 + blen) return;      // body 未到齐
+    char *frame = (char *)malloc(p[4] + 1 + blen + 1);
+    if (frame)
+    {
+      memcpy(frame, conAcc.begin(), p[4] + 1 + blen);
+      frame[p[4] + 1 + blen] = 0;
+      if (xQueueSend(conQ, &frame, 0) != pdTRUE) free(frame);
+    }
+    conAcc.remove(0, p[4] + 1 + blen);
+  }
+}
+
+class BleConCb : public NimBLECharacteristicCallbacks
+{
+  void onWrite(NimBLECharacteristic *c) override
+  {
+    NimBLEAttValue v = c->getValue();
+    if (!v.length()) return;
+    if (conAcc.length() + v.length() > 8192) { conAcc = ""; return; }
+    conAcc.concat((const char *)v.data(), v.length());
+    conTryParse();
+  }
+};
+
+static void conSend(const String &seq, int code, const String &payload)
+{
+  if (!conTx) return;
+  String s = seq + "\n" + String(code) + "\n" + String((unsigned)payload.length()) + "\n" + payload;
+  size_t off = 0;
+  while (off < s.length())
+  {
+    size_t n = s.length() - off;
+    if (n > 180) n = 180;   // MTU 247 以内安全；网页按帧长度拼包，分片边界无所谓
+    conTx->setValue((const uint8_t *)s.c_str() + off, n);
+    conTx->notify();
+    off += n;
+    if (off < s.length()) vTaskDelay(pdMS_TO_TICKS(6));   // 别淹没协议栈
+  }
+}
+
+static void conTask(void *)
+{
+  for (;;)
+  {
+    char *frame;
+    if (xQueueReceive(conQ, &frame, portMAX_DELAY) != pdTRUE) continue;
+
+    // 拆 5 行头：seq / METHOD / path / pin / len，L[5] 为 body 起点
+    char *L[6];
+    int li = 0;
+    L[li++] = frame;
+    for (char *q = frame; *q && li < 6; q++)
+      if (*q == '\n') { *q = 0; L[li++] = q + 1; }
+
+    if (li >= 6)
+    {
+      int blen = atoi(L[4]);
+      String body;
+      body.concat(L[5], (unsigned int)blen);
+      int code = 404;
+      String out;
+      bool isText = false;
+      otaApiDispatch(L[1], L[2], L[3], body, true, code, out, isText);
+      logTeePrintf("[ble] console %s %s -> %d (%u B)\n", L[1], L[2], code, (unsigned)out.length());
+      conSend(String(L[0]), code, out);
+    }
+    free(frame);
+  }
+}
+
 static StreamBufferHandle_t bleSb = nullptr;
 static QueueHandle_t bleQ = nullptr;
 static NimBLECharacteristic *bleTx = nullptr;
@@ -610,7 +712,23 @@ void otaBleBegin()
     }
     rx->setCallbacks(new BleOtaCb());
     bleInfo = svc->createCharacteristic(BLE_OTA_INFO, NIMBLE_PROPERTY::READ);
+    // 蓝牙控制台特征（网页没 WiFi 时也能配置设备）
+    NimBLECharacteristic *conRx = svc->createCharacteristic(BLE_CON_RX, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+    conTx = svc->createCharacteristic(BLE_CON_TX, NIMBLE_PROPERTY::NOTIFY);
+    if (!conRx || !conTx)
+      logTeePrintf("[ota] ble console char create failed rx=%p tx=%p\n", (void *)conRx, (void *)conTx);
+    else
+      conRx->setCallbacks(new BleConCb());
   }
+  if (!conQ) conQ = xQueueCreate(4, sizeof(char *));
+  static bool conTaskMade = false;
+  if (conQ && !conTaskMade)
+  {
+    conTaskMade = true;
+    if (xTaskCreate(conTask, "blecon", 8192, nullptr, 1, nullptr) != pdPASS)
+      logTeePrintf("[ota] ble console task create FAILED（内部内存不足）\n");
+  }
+  conAcc = "";   // 挂起/恢复或重连后丢弃半截请求
   if (bleInfo && otaLastInfo.length())
     bleInfo->setValue((const uint8_t *)otaLastInfo.c_str(), otaLastInfo.length());
   bleSvcOk = svc->start();

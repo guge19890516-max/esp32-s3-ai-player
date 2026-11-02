@@ -51,3 +51,8 @@ String cfgModels();                    // 运行时缓存，来自“拉取模�
 void cfgSetModels(const String &models);
 int  cfgIndexOf(const char *key);      // 按 key 找表下标，找不到 -1
 bool cfgFlag(const char *key);         // BOOL 项当前值（"1"/"0"）
+
+// 串口编码（内存缓存，收发路径每帧都要查）：UTF-8/ASCII/GBK/GB2312/UNICODE
+String cfgTxEnc();                     // 发送编码
+String cfgRxEnc();                     // 接收编码
+bool cfgUniBom();                      // UNICODE 是否带 BOM (FF FE)

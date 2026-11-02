@@ -94,7 +94,7 @@
 <body>
 <div class="wrap">
   <h1>ESP32-S3 设备控制台</h1>
-  <p class="lead">推送升级走蓝牙 / WiFi 直传固件；设备设置与设备状态通过设备 8080 端口的 HTTP 接口实时同步。</p>
+  <p class="lead">推送升级走蓝牙 / WiFi 直传固件；设备设置与设备状态优先走 HTTP，设备没连 WiFi 时自动走蓝牙通道（保持蓝牙连接即可配置）。</p>
 
   <div id="banner" class="banner"></div>
 
@@ -180,9 +180,81 @@
       <div class="row" id="pinRow" style="margin-top:10px; display:none">
         <div class="grow"><input id="pinIn" placeholder="设备 PIN（开启 PIN 后显示在设备状态页）" inputmode="numeric" maxlength="4"></div>
       </div>
-      <div id="confMsg" class="hint" style="margin-top:8px">填好设备 IP 后点「加载设置」，表单由固件配置表自动生成。</div>
+      <div id="confMsg" class="hint" style="margin-top:8px">填好设备 IP 点「加载设置」走 HTTP；设备没连 WiFi 时保持蓝牙连接即可（自动走蓝牙通道），表单由固件配置表自动生成。</div>
     </div>
     <div id="confList"></div>
+
+    <div class="card" id="btmodCard">
+      <b style="font-size:14px">蓝牙模块（BT04E）配置</b>
+      <p class="hint" style="margin:6px 0 0">通过设备背后的 AT 串口直配 BT04E。注意：AT 命令仅在模块<b>无蓝牙连接</b>时有效；改参数后固件会自动补发 AT+RESET。</p>
+      <div class="row" style="margin-top:12px">
+        <button id="btTest" class="ghost">测试连接（发 AT）</button>
+        <button id="btInfo" class="ghost">查询模块信息</button>
+        <span id="btModMsg" class="hint grow">先点「测试连接」，通了再查信息。</span>
+      </div>
+      <div id="btInfoBox" hidden class="hint"
+           style="margin-top:10px;background:#0b1424;border:1px solid var(--line);border-radius:10px;padding:10px 12px;white-space:pre-wrap;word-break:break-all"></div>
+
+      <div class="row" style="margin-top:14px">
+        <div class="grow"><select id="btBaud">
+          <option value="2400">2400</option>
+          <option value="4800">4800</option>
+          <option value="9600" selected>9600</option>
+          <option value="19200">19200</option>
+          <option value="38400">38400</option>
+          <option value="57600">57600</option>
+          <option value="115200">115200</option>
+        </select></div>
+        <button id="btBaudSet" class="ghost">设波特率</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="grow"><select id="btPari">
+          <option value="0">无校验</option>
+          <option value="1">奇校验</option>
+          <option value="2">偶校验</option>
+        </select></div>
+        <button id="btPariSet" class="ghost">设校验位</button>
+        <div class="grow"><select id="btStop">
+          <option value="0">1 位停止位</option>
+          <option value="1">2 位停止位</option>
+        </select></div>
+        <button id="btStopSet" class="ghost">设停止位</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="grow"><input id="btName" placeholder="模块蓝牙名称（UTF-8 ≤28 字节）" maxlength="28"></div>
+        <button id="btNameSet" class="ghost">设名称</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="grow"><input id="btCmd" placeholder="自定义 AT 命令，如 AT+VERSION" spellcheck="false"></div>
+        <button id="btSend" class="ghost">发送</button>
+      </div>
+      <div id="btCmdOut" hidden
+           style="margin-top:10px;background:#060b14;border:1px solid var(--line);border-radius:10px;padding:10px 12px;white-space:pre-wrap;word-break:break-all;font:12.5px/1.6 ui-monospace,Consolas,'Courier New',monospace;color:#a9bdd8;max-height:220px;overflow:auto"></div>
+      <div class="row" style="margin-top:12px">
+        <button id="btReset" class="ghost">重启模块</button>
+        <button id="btDefault" class="danger">恢复出厂</button>
+      </div>
+    </div>
+
+    <div class="card" id="dbgCard">
+      <b style="font-size:14px">AT 口调试（GPIO41 TX / GPIO42 RX）</b>
+      <p class="hint" style="margin:6px 0 0">用 USB-TTL 把电脑串口助手接到设备：适配器 <b>RXD→41</b>、<b>TXD→42</b>、共地。
+      打开调试口后，这里发出的字节从 41 出去、42 收到的字节回显在下方——双向都通说明串口链路正常（与 BT04E 无关的裸测）。调试期间 AT 命令不可用。</p>
+      <div class="row" style="margin-top:12px">
+        <button id="dbgOn" class="ghost">打开调试口</button>
+        <button id="dbgOff" class="ghost" disabled>关闭调试口</button>
+        <button id="dbgClear" class="ghost" disabled>清空</button>
+        <span id="dbgMsg" class="hint grow">未打开</span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <div class="grow"><input id="dbgTx" placeholder="发送内容（HEX 勾选后按十六进制解析）" spellcheck="false"></div>
+        <label class="hint" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="dbgHex">HEX</label>
+        <label class="hint" style="display:flex;align-items:center;gap:4px"><input type="checkbox" id="dbgCrLf" checked>加\r\n</label>
+        <button id="dbgSend" class="ghost" disabled>发送</button>
+      </div>
+      <div id="dbgRx" hidden
+           style="margin-top:10px;background:#060b14;border:1px solid var(--line);border-radius:10px;padding:10px 12px;white-space:pre-wrap;word-break:break-all;font:12.5px/1.6 ui-monospace,Consolas,'Courier New',monospace;color:#a9bdd8;max-height:220px;overflow:auto"></div>
+    </div>
   </div><!-- /pageConf -->
 
   <div id="pageStat" hidden>
@@ -192,7 +264,7 @@
         <button id="sStart" class="ghost">开始刷新</button>
         <button id="sStop" class="ghost" disabled>停止</button>
       </div>
-      <div id="statMsg" class="hint" style="margin-top:8px">每 1 秒轮询一次设备状态接口。</div>
+      <div id="statMsg" class="hint" style="margin-top:8px">每 1 秒轮询一次设备状态（HTTP 优先，设备没连 WiFi 时自动走蓝牙通道）。</div>
     </div>
     <div class="card">
       <div id="statGrid" class="statGrid"></div>
@@ -212,6 +284,8 @@
   const RX  = '5f9b0002-7a2c-4d3e-9c1e-9b6f5c1a2d01';
   const TX  = '5f9b0003-7a2c-4d3e-9c1e-9b6f5c1a2d01';
   const INFO = '5f9b0004-7a2c-4d3e-9c1e-9b6f5c1a2d01';   // 只读：http://<ip>:8080/ota
+  const CON_RX = '5f9b0005-7a2c-4d3e-9c1e-9b6f5c1a2d01'; // 蓝牙控制台：网页->设备 API 请求
+  const CON_TX = '5f9b0006-7a2c-4d3e-9c1e-9b6f5c1a2d01'; // 蓝牙控制台：设备->网页 API 应答
   const HTTP_PORT = 8080;
   const CHUNK = 240;
   const NAME_PREFIX = 'ESP32-S3-AI';
@@ -227,6 +301,8 @@
   const logBox = $('log');
 
   let device = null, server = null, rxChar = null, txChar = null, infoChar = null;
+  let conRxChar = null, conTxChar = null;   // 蓝牙控制台特征（设备没连 WiFi 时走这里）
+  let conBuf = null, conPending = null, conSeq = 0, bleChannel = false;
   let wfRunning = false;
   let file = null, fileBuf = null;
   let running = false, cancelled = false;
@@ -342,6 +418,17 @@
       } catch (e) {
         log('未读到设备 IP（可手动填写）：' + e.message, 'warn');
       }
+      // 蓝牙控制台通道：设备没连 WiFi 时，设置/状态/日志走这里
+      try {
+        conRxChar = await svc.getCharacteristic(CON_RX);
+        conTxChar = await svc.getCharacteristic(CON_TX);
+        await conTxChar.startNotifications();
+        conTxChar.addEventListener('characteristicvaluechanged', onConNotify);
+        bleChannel = true;
+        log('蓝牙控制台通道就绪：设备没连 WiFi 也能在「设备设置/设备状态」里操作', 'ok');
+      } catch (e) {
+        log('此固件不支持蓝牙控制台通道，设置/状态需设备联网后走 HTTP', 'warn');
+      }
       setConnected(true);
       setState('已连接，可以升级');
       log('已连接，OTA 服务就绪', 'ok');
@@ -373,11 +460,74 @@
     waiters = {};
     try { if (txChar) txChar.removeEventListener('characteristicvaluechanged', onNotify); } catch (_) {}
     try { if (txChar) txChar.stopNotifications(); } catch (_) {}
+    try { if (conTxChar) conTxChar.removeEventListener('characteristicvaluechanged', onConNotify); } catch (_) {}
+    try { if (conTxChar) conTxChar.stopNotifications(); } catch (_) {}
+    if (conPending) { clearTimeout(conPending.timer); conPending.reject(new Error('蓝牙已断开')); conPending = null; }
     if (disconnect && device && device.gatt.connected) device.gatt.disconnect();
     rxChar = txChar = infoChar = null; server = null;
+    conRxChar = conTxChar = null; conBuf = null; bleChannel = false;
     setConnected(false);
     btnCancel.disabled = true;
     updateStart();
+  }
+
+  // ---------- 蓝牙控制台通道（/api/* 走 Web Bluetooth，设备没连 WiFi 也能用） ----------
+  // 应答帧（可分多个 notify）：seq\ncode\nlen\n + len 字节 payload
+  function onConNotify(e) {
+    const v = new Uint8Array(e.target.value.buffer);
+    const nb = new Uint8Array((conBuf ? conBuf.length : 0) + v.length);
+    if (conBuf) nb.set(conBuf, 0);
+    nb.set(v, conBuf ? conBuf.length : 0);
+    conBuf = nb;
+    tryConFrame();
+  }
+  function tryConFrame() {
+    if (!conBuf) return;
+    let nl = 0, hdrEnd = -1;
+    for (let i = 0; i < conBuf.length; i++)
+      if (conBuf[i] === 10 && ++nl === 3) { hdrEnd = i; break; }
+    if (hdrEnd < 0) { if (conBuf.length > 256) conBuf = null; return; }
+    const hdr = new TextDecoder().decode(conBuf.subarray(0, hdrEnd)).split('\n');
+    const seq = parseInt(hdr[0], 10), code = parseInt(hdr[1], 10), len = parseInt(hdr[2], 10);
+    if (!isFinite(seq) || !isFinite(code) || !isFinite(len) || len < 0 || len > 65536) { conBuf = null; return; }
+    if (conBuf.length < hdrEnd + 1 + len) return;   // payload 未到齐
+    const payload = new TextDecoder().decode(conBuf.subarray(hdrEnd + 1, hdrEnd + 1 + len));
+    conBuf = conBuf.length > hdrEnd + 1 + len ? conBuf.slice(hdrEnd + 1 + len) : null;
+    if (conPending && conPending.seq === seq) {
+      clearTimeout(conPending.timer);
+      const p = conPending;
+      conPending = null;
+      p.resolve({ code, text: payload });
+    }
+  }
+  // 请求帧：seq\nMETHOD\npath\npin\nlen\n + body，超 MTU 自动分多次写入（固件会拼帧）
+  async function bleApi(method, path, body = '') {
+    if (!conRxChar) throw new Error('蓝牙未连接');
+    if (conPending) throw new Error('上一个蓝牙请求还没完成，请稍候');
+    const seq = (conSeq = (conSeq + 1) & 0x7fff);
+    const enc = new TextEncoder();
+    const bodyB = enc.encode(body);
+    const pin = pinReady() ? pinEl.value.trim() : '';
+    const head = enc.encode(`${seq}\n${method}\n${path}\n${pin}\n${bodyB.length}\n`);
+    const frame = new Uint8Array(head.length + bodyB.length);
+    frame.set(head, 0);
+    frame.set(bodyB, head.length);
+    conBuf = null;
+    return new Promise((resolve, reject) => {
+      const pend = { seq, resolve, reject,
+        timer: setTimeout(() => {
+          if (conPending && conPending.seq === seq) { conPending = null; reject(new Error('蓝牙响应超时（设备没回应）')); }
+        }, 12000) };
+      conPending = pend;
+      (async () => {
+        try {
+          for (let off = 0; off < frame.length; off += 180)
+            await conRxChar.writeValue(frame.subarray(off, Math.min(off + 180, frame.length)));
+        } catch (e) {
+          if (conPending && conPending.seq === seq) { clearTimeout(pend.timer); conPending = null; reject(e); }
+        }
+      })();
+    });
   }
 
   // ---------- 自动查找设备（mDNS → 蓝牙读到的 IP → 网段扫描） ----------
@@ -750,49 +900,76 @@
 
   // ---- 统一 API 封装：自动带 X-Pin；401 时提示 ----
   function pinReady() { return pinEl.value.trim().length === 4; }
-  async function api(ip, path, opts = {}) {
-    opts.cache = 'no-store';
-    opts.headers = Object.assign({}, opts.headers);
-    if (pinReady()) opts.headers['X-Pin'] = pinEl.value.trim();
-    let r;
-    try { r = await fetch(`http://${ip}:${HTTP_PORT}${path}`, opts); }
-    catch (e) { throw new Error('连不上设备（检查 IP / 同一 WiFi）'); }
-    if (r.status === 401) throw new Error('需要 PIN：设备上 设置 → 配置项 → 「网页需要 PIN」开启后，PIN 显示在设备状态页');
+  let lastViaBle = false;   // 最近一次请求是否走了蓝牙通道（界面提示用）
+
+  async function toResult(r, textMode) {
+    if (r.status === 401) throw new Error('需要 PIN：先在 PIN 框输入 4 位 PIN（显示在设备屏幕：设置 → 设备状态）');
+    if (r.status === 404 && textMode) throw new Error('网页日志已关闭（设备上：设置 → 配置项 → 调试 →「网页日志」）');
     if (r.status === 400) { const j = await r.json().catch(() => ({})); throw new Error(j.err || '参数错误'); }
     if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.json();
+    return textMode ? r.text() : r.json();
   }
-  async function apiText(ip, path) {
-    const opts = { cache: 'no-store' };
-    if (pinReady()) opts.headers = { 'X-Pin': pinEl.value.trim() };
+
+  async function httpApi(ip, path, opts = {}, textMode = false) {
+    const o = Object.assign({}, opts);
+    o.cache = 'no-store';
+    o.headers = Object.assign({}, o.headers || {});
+    if (pinReady()) o.headers['X-Pin'] = pinEl.value.trim();
     let r;
-    try { r = await fetch(`http://${ip}:${HTTP_PORT}${path}`, opts); }
+    try { r = await fetch(`http://${ip}:${HTTP_PORT}${path}`, o); }
     catch (e) { throw new Error('连不上设备（检查 IP / 同一 WiFi）'); }
-    if (r.status === 401) throw new Error('需要 PIN：先在上方 PIN 框输入 4 位 PIN');
-    if (r.status === 404) throw new Error('网页日志已关闭（设备上：设置 → 配置项 → 调试 →「网页日志」）');
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.text();
+    return toResult(r, textMode);
+  }
+
+  async function bleResult(r, textMode) {
+    if (r.code === 401) throw new Error('需要 PIN：先在 PIN 框输入 4 位 PIN（显示在设备屏幕：设置 → 设备状态）');
+    if (r.code === 404 && textMode) throw new Error('网页日志已关闭（设备上：设置 → 配置项 → 调试 →「网页日志」）');
+    if (r.code !== 200) {
+      let j = {}; try { j = JSON.parse(r.text); } catch (_) {}
+      throw new Error(j.err || ('设备错误码 ' + r.code));
+    }
+    return textMode ? r.text : JSON.parse(r.text);
+  }
+
+  // 双通道：优先 HTTP（快）；设备没填 IP 或 HTTP 连不上时自动走蓝牙控制台通道。
+  // 业务错误（PIN / 参数 / 已关闭）不会触发通道切换，直接抛出。
+  async function api(ip, path, opts = {}, textMode = false) {
+    lastViaBle = false;
+    const method = opts.method || 'GET';
+    const body = opts.body || '';
+    if (bleChannel) {
+      if (ip) {
+        try { return await httpApi(ip, path, opts, textMode); }
+        catch (e) {
+          if (!/连不上/.test(e.message)) throw e;
+          log('HTTP 不通，本次改走蓝牙通道', 'warn');
+        }
+      }
+      lastViaBle = true;
+      return await bleResult(await bleApi(method, path, body), textMode);
+    }
+    return await httpApi(ip, path, opts, textMode);
   }
 
   // ---- 网页日志 ----
   $('logBtn').addEventListener('click', async () => {
     const ip = sipEl.value.trim();
-    if (!ip) { $('logMsg').textContent = '请先填设备 IP'; return; }
+    if (!ip && !bleChannel) { $('logMsg').textContent = '请先填设备 IP，或保持蓝牙连接（蓝牙通道也能看日志）'; return; }
     $('logMsg').textContent = '拉取中...';
     try {
-      const t = await apiText(ip, '/api/logs');
+      const t = await api(ip, '/api/logs', {}, true);
       const box = $('logBox');
       box.hidden = false;
       box.textContent = t;
       box.scrollTop = box.scrollHeight;
-      $('logMsg').textContent = `已加载 ${t.length} 字节 · ${new Date().toTimeString().slice(0, 8)}`;
+      $('logMsg').textContent = `已加载 ${t.length} 字节 · ${new Date().toTimeString().slice(0, 8)}${lastViaBle ? '（蓝牙通道，稍慢）' : ''}`;
     } catch (e) { $('logMsg').textContent = '失败：' + e.message; }
   });
   $('logClear').addEventListener('click', async () => {
     const ip = sipEl.value.trim();
-    if (!ip) { $('logMsg').textContent = '请先填设备 IP'; return; }
+    if (!ip && !bleChannel) { $('logMsg').textContent = '请先填设备 IP，或保持蓝牙连接'; return; }
     try {
-      await apiText(ip, '/api/logs?clear=1');
+      await api(ip, '/api/logs?clear=1', {}, true);
       $('logBox').hidden = false;
       $('logBox').textContent = '(已清空)';
       $('logMsg').textContent = '设备日志已清空';
@@ -804,6 +981,13 @@
     if (it.t === 'bool') {
       const on = it.v === '1';
       return `<button data-act="toggle" data-k="${it.k}" class="${on ? '' : 'ghost'}">${on ? '开（点击关闭）' : '关（点击开启）'}</button>`;
+    }
+    if (it.k === 'net.ssid') {
+      // WiFi 名称：不用手填，点「扫描」列出附近热点像手机一样点选
+      return `<div class="cfgRow"><div class="grow"><input data-k="${it.k}" type="text" value="${escapeHtml(it.v)}" placeholder="WiFi 名称（点「扫描」自动列出）"></div>
+              <button data-act="scan" class="ghost">扫描</button>
+              <button data-act="save" data-k="${it.k}" class="ghost">保存</button></div>
+              <select data-role="aplist" hidden style="margin-top:8px"></select>`;
     }
     if (it.t === 'enum') {
       const opts = (it.o || '').split('|').map(o =>
@@ -835,7 +1019,7 @@
 
   async function saveItem(k, v, msgEl, btn) {
     const ip = cipEl.value.trim();
-    if (!ip) { confMsg.textContent = '请先填设备 IP'; return; }
+    if (!ip && !bleChannel) { confMsg.textContent = '请先填设备 IP，或保持蓝牙连接（蓝牙通道也能保存）'; return; }
     if (btn) btn.disabled = true;
     try {
       const j = await api(ip, '/api/settings', {
@@ -847,7 +1031,7 @@
       // secret 项保存后刷新真实打码值
       const item = confList.querySelector(`[data-item="${k}"]`);
       if (item && item.querySelector('input[type=password]')) item.querySelector('input').value = '';
-      confMsg.textContent = `${k} 已保存`;
+      confMsg.textContent = `${k} 已保存${lastViaBle ? '（蓝牙通道）' : ''}`;
     } catch (e) {
       if (msgEl) { msgEl.textContent = '失败：' + e.message; msgEl.className = 'msg err'; }
     } finally {
@@ -860,14 +1044,16 @@
     const itemEl = btn.closest('.cfgItem'); if (!itemEl) return;
     const msgEl = itemEl.querySelector('.msg');
     const k = btn.dataset.k || itemEl.dataset.item;
-    if (btn.dataset.act === 'toggle') {
+    if (btn.dataset.act === 'scan') {
+      runApScan(itemEl, btn).catch(err => { confMsg.textContent = '扫描失败：' + err.message; });
+    } else if (btn.dataset.act === 'toggle') {
       const on = btn.classList.contains('ghost');
       saveItem(k, on ? '1' : '0', msgEl, btn).then(() => {
         btn.className = on ? '' : 'ghost';
         btn.textContent = on ? '开（点击关闭）' : '关（点击开启）';
       });
     } else if (btn.dataset.act === 'save') {
-      const sel = itemEl.querySelector('select');
+      const sel = itemEl.querySelector('select:not([data-role=aplist])');
       const inp = itemEl.querySelector('input');
       const v = sel ? sel.value : (inp ? inp.value : '');
       if (inp && inp.type === 'password' && !v) { msgEl.textContent = '留空表示不修改'; msgEl.className = 'msg'; return; }
@@ -875,9 +1061,53 @@
     }
   });
 
+  // ---- WiFi 扫描点选 ----
+  confList.addEventListener('change', e => {
+    const sel = e.target.closest('select[data-role=aplist]');
+    if (!sel) return;
+    if (sel.value) {
+      const inp = sel.closest('.cfgItem').querySelector('input[data-k=net\\.ssid]');
+      if (inp) { inp.value = sel.value; inp.focus(); }
+    }
+    sel.selectedIndex = 0;
+    sel.hidden = true;
+  });
+
+  async function runApScan(itemEl, btn) {
+    const ip = cipEl.value.trim();
+    if (!ip && !bleChannel) { confMsg.textContent = '请先填设备 IP，或保持蓝牙连接（蓝牙通道也能扫描）'; return; }
+    const sel = itemEl.querySelector('select[data-role=aplist]');
+    btn.disabled = true;
+    const oldTxt = btn.textContent;
+    btn.textContent = '扫描中…';
+    sel.hidden = true; sel.innerHTML = '';
+    try {
+      const t0 = performance.now();
+      let j;
+      for (;;) {   // 首次请求触发扫描，轮询直到出结果（约 2~4 秒）
+        j = await api(ip, '/api/wifi?scan=1');
+        if (!j.scanning) break;
+        if (performance.now() - t0 > 25000) throw new Error('扫描超时，请重试');
+        await sleep(700);
+      }
+      if (j.err) throw new Error(j.err);
+      const aps = j.aps || [];
+      if (!aps.length) { confMsg.textContent = '没扫描到 WiFi（附近没信号或射频忙，稍后再试）'; return; }
+      sel.innerHTML = `<option value="">— 扫到 ${aps.length} 个 WiFi，点此选择 —</option>` +
+        aps.map(a => `<option value="${escapeHtml(a.s)}">${escapeHtml(a.s)}（${a.r} dBm${a.l ? ' · 加密' : ''}）</option>`).join('');
+      sel.hidden = false;
+      confMsg.textContent = '扫描完成：点开列表选 WiFi，再在下方密码栏输入密码保存';
+    } catch (e) {
+      confMsg.textContent = '扫描失败：' + e.message;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = oldTxt;
+    }
+  }
+
   async function loadConf() {
     const ip = cipEl.value.trim();
-    if (!ip) { confMsg.textContent = '请先填设备 IP（可在推送升级页连蓝牙自动获取，或手动填写）'; return; }
+    if (!ip && !bleChannel) { confMsg.textContent = '请先填设备 IP，或在推送升级页连接蓝牙（设备没连 WiFi 也能用蓝牙通道配置）'; return; }
     confMsg.textContent = '加载中…';
     confList.innerHTML = '';
     try {
@@ -889,7 +1119,7 @@
       }
       const j = await api(ip, '/api/settings');
       renderConf(j);
-      confMsg.textContent = `固件 ${caps.fw} · 已加载 ${j.groups.reduce((n, g) => n + g.items.length, 0)} 个设置项`;
+      confMsg.textContent = `固件 ${caps.fw} · 已加载 ${j.groups.reduce((n, g) => n + g.items.length, 0)} 个设置项${lastViaBle ? '（蓝牙通道）' : ''}`;
     } catch (e) {
       confMsg.textContent = '加载失败：' + e.message;
       if (/PIN/.test(e.message)) pinRow.style.display = 'flex';
@@ -919,23 +1149,28 @@
     if (j.pinreq) h += statCell('网页 PIN', `已开启 · 当前 PIN <b>${escapeHtml(j.pin || '')}</b>（重启后变化）`, 'warn');
     statGrid.innerHTML = h;
   }
+  let statBusy = false;
   async function statTick() {
+    if (statBusy) return;   // 蓝牙通道较慢，上一轮没回来就跳过这拍
+    statBusy = true;
     const ip = sipEl.value.trim();
-    if (!ip) { statMsg.textContent = '请先填设备 IP'; stopStat(); return; }
     try {
+      if (!ip && !bleChannel) { statMsg.textContent = '请先填设备 IP，或保持蓝牙连接'; stopStat(); return; }
       const caps = await api(ip, '/api/caps');
       pinRow.style.display = caps.pinreq ? 'flex' : 'none';
       const j = await api(ip, '/api/status');
       renderStat(j);
-      statMsg.textContent = `固件 ${j.fw} · 上次刷新 ${new Date().toTimeString().slice(0, 8)}`;
+      statMsg.textContent = `固件 ${j.fw} · 上次刷新 ${new Date().toTimeString().slice(0, 8)}${lastViaBle ? '（蓝牙通道）' : ''}`;
     } catch (e) {
       statMsg.textContent = '刷新失败：' + e.message;
       if (/PIN/.test(e.message)) stopStat();
+    } finally {
+      statBusy = false;
     }
   }
   function startStat() {
     if (statTimer) return;
-    if (!sipEl.value.trim()) { statMsg.textContent = '请先填设备 IP（可在推送升级页连蓝牙自动获取）'; return; }
+    if (!sipEl.value.trim() && !bleChannel) { statMsg.textContent = '请先填设备 IP，或保持蓝牙连接（蓝牙通道也能刷新状态）'; return; }
     statTick();
     statTimer = setInterval(statTick, 1000);
     $('sStart').disabled = true; $('sStop').disabled = false;
@@ -946,6 +1181,154 @@
   }
   $('sStart').addEventListener('click', startStat);
   $('sStop').addEventListener('click', stopStat);
+
+  // ---- 蓝牙模块（BT04E）：GET/POST /api/btmod，复用双通道 api()（HTTP 优先，自动回退蓝牙） ----
+  const BT_BAUD_CODE = { '2400': '1', '4800': '2', '9600': '3', '19200': '4', '38400': '5', '57600': '6', '115200': '7' };
+  function btMsg(t) { $('btModMsg').textContent = t; }
+  function btOut(t) { const el = $('btCmdOut'); el.hidden = false; el.textContent = t; }
+
+  async function btRun(btn, cmd, okTip) {
+    const ip = cipEl.value.trim();
+    if (!ip && !bleChannel) { btMsg('请先填设备 IP，或保持蓝牙连接'); return; }
+    const old = btn.textContent;
+    btn.disabled = true; btn.textContent = '发送中…';
+    btMsg(`${cmd} 执行中…（模块无蓝牙连接时才应答）`);
+    try {
+      const j = await api(ip, '/api/btmod', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd })
+      });
+      btOut(`${cmd}\n${j.resp || '(空)'}`);
+      btMsg((j.ok ? '✓ ' : '✗ ') + (j.ok ? (okTip || '执行成功') : '模块未返回 OK（检查接线/是否被蓝牙占用）')
+            + (lastViaBle ? '（蓝牙通道）' : ''));
+    } catch (e) {
+      btMsg('失败：' + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = old;
+    }
+  }
+
+  // 测试连接：只发 AT，按结果给排错提示
+  $('btTest').addEventListener('click', async () => {
+    const btn = $('btTest'), old = btn.textContent;
+    const ip = cipEl.value.trim();
+    if (!ip && !bleChannel) { btMsg('请先填设备 IP，或保持蓝牙连接'); return; }
+    btn.disabled = true; btn.textContent = '测试中…';
+    btMsg('发送 AT 中…（模块无蓝牙连接时才应答）');
+    try {
+      const j = await api(ip, '/api/btmod', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cmd: 'AT' })
+      });
+      const ok = !!j.ok;
+      btOut('AT\n' + (j.resp || '(空)') + (ok ? '' :
+        '\n\n排查顺序：\n1. 模块正被手机/电脑蓝牙连着（连着不响应 AT）' +
+        '\n2. RX/TX 是否交叉：模块TXD→GPIO42，RXD→GPIO41' +
+        '\n3. AT 口波特率与模块是否一致（设备配置项 btmod.baud，默认9600）' +
+        '\n4. 是否共地（GND）'));
+      btMsg((ok ? '✓ 连接正常，模块应答 OK' : '✗ 无应答，请按输出框里的提示排查')
+            + (lastViaBle ? '（蓝牙通道）' : ''));
+    } catch (e) {
+      btMsg('测试失败：' + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = old;
+    }
+  });
+  $('btInfo').addEventListener('click', async () => {
+    const btn = $('btInfo'), old = btn.textContent;
+    const ip = cipEl.value.trim();
+    if (!ip && !bleChannel) { btMsg('请先填设备 IP，或保持蓝牙连接'); return; }
+    btn.disabled = true; btn.textContent = '查询中…';
+    btMsg('查询模块信息中…');
+    try {
+      const j = await api(ip, '/api/btmod');
+      $('btInfoBox').hidden = false;
+      $('btInfoBox').textContent =
+        `版本: ${j.version || '未应答'}\nMAC: ${j.mac || '未应答'}\n名称: ${j.name || '未应答'}\n` +
+        `波特率: ${j.baud || '未应答'}\n校验位: ${j.pari || '未应答'}\n停止位: ${j.stop || '未应答'}`;
+      btMsg('查询完成' + (lastViaBle ? '（蓝牙通道）' : ''));
+    } catch (e) {
+      btMsg('查询失败：' + e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = old;
+    }
+  });
+  $('btBaudSet').addEventListener('click', () => {
+    const v = $('btBaud').value;
+    btRun($('btBaudSet'), 'AT+BAUD' + BT_BAUD_CODE[v], `模块波特率已改为 ${v}（设置里的 AT 口波特率请同步改 ${v}）`);
+  });
+  $('btPariSet').addEventListener('click', () => btRun($('btPariSet'), 'AT+PARI' + $('btPari').value, '校验位已写入'));
+  $('btStopSet').addEventListener('click', () => btRun($('btStopSet'), 'AT+STOP' + $('btStop').value, '停止位已写入'));
+  $('btNameSet').addEventListener('click', () => {
+    const nm = $('btName').value.trim();
+    if (!nm) { btMsg('请先输入模块名称'); return; }
+    if (new TextEncoder().encode(nm).length > 28) { btMsg('名称超长（UTF-8 需 ≤28 字节）'); return; }
+    btRun($('btNameSet'), 'AT+NAME' + nm, '模块名称已写入');
+  });
+  $('btSend').addEventListener('click', () => {
+    const c = $('btCmd').value.trim();
+    if (!/^AT/i.test(c)) { btMsg('命令需以 AT 开头'); return; }
+    btRun($('btSend'), c);
+  });
+  $('btCmd').addEventListener('keydown', e => { if (e.key === 'Enter') $('btSend').click(); });
+  $('btReset').addEventListener('click', () => btRun($('btReset'), 'AT+RESET', '模块重启中'));
+  $('btDefault').addEventListener('click', () => {
+    if (!confirm('确定恢复 BT04E 出厂设置？\n名称 / 波特率 / 校验位 / 配对码等全部还原，AT 口波特率回到 9600。')) return;
+    btRun($('btDefault'), 'AT+DEFAULT', '已恢复出厂，AT 口波特率回到 9600');
+  });
+
+  // ---- AT 口调试（GPIO41/42 裸收发）：验证串口链路本身 ----
+  let dbgTimer = null;
+  function dbgMsg(t) { $('dbgMsg').textContent = t; }
+  function dbgSetUI(on) {
+    $('dbgOn').disabled = on; $('dbgOff').disabled = !on;
+    $('dbgSend').disabled = !on; $('dbgClear').disabled = !on;
+  }
+  const dbgHex2Bytes = h => h.trim() ? h.trim().split(/\s+/).map(x => parseInt(x, 16)) : [];
+  const dbgBytes2Text = bs => { try { return new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(bs)); } catch (e) { return bs.map(b => String.fromCharCode(b)).join(''); } };
+  async function dbgPoll() {
+    try {
+      const j = await api(cipEl.value.trim(), '/api/dbg');
+      if (!j.on) { dbgMsg('调试口未打开'); return; }
+      if (j.rx) {
+        const bs = dbgHex2Bytes(j.rx);
+        const box = $('dbgRx');
+        box.hidden = false;
+        box.textContent += `[收 ${bs.length}B] ${dbgBytes2Text(bs)}\n[HEX] ${j.rx}\n`;
+        box.scrollTop = box.scrollHeight;
+      }
+      dbgMsg(`调试口已打开（累计收 ${j.total} 字节）`);
+    } catch (e) { dbgMsg('轮询失败：' + e.message); }
+  }
+  $('dbgOn').addEventListener('click', async () => {
+    try {
+      await api(cipEl.value.trim(), '/api/dbg?on=1', { method: 'POST' });
+      dbgSetUI(true); dbgMsg('调试口已打开，用电脑串口助手对 41/42 收发试试');
+      if (!dbgTimer) dbgTimer = setInterval(dbgPoll, 500);
+    } catch (e) { dbgMsg('打开失败：' + e.message); }
+  });
+  $('dbgOff').addEventListener('click', async () => {
+    try { await api(cipEl.value.trim(), '/api/dbg?off=1', { method: 'POST' }); } catch (e) {}
+    if (dbgTimer) { clearInterval(dbgTimer); dbgTimer = null; }
+    dbgSetUI(false); dbgMsg('调试口已关闭');
+  });
+  $('dbgClear').addEventListener('click', () => { const b = $('dbgRx'); b.hidden = true; b.textContent = ''; });
+  $('dbgSend').addEventListener('click', async () => {
+    let data = $('dbgTx').value;
+    if (!data) { dbgMsg('先输入要发送的内容'); return; }
+    const hex = $('dbgHex').checked;
+    if ($('dbgCrLf').checked && !hex) data += '\r\n';
+    try {
+      const j = await api(cipEl.value.trim(), '/api/dbg', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data, hex: hex ? 1 : 0 })
+      });
+      dbgMsg(`已从 GPIO41 发出 ${j.n} 字节，等 GPIO42 回显`);
+    } catch (e) { dbgMsg('发送失败：' + e.message); }
+  });
+  $('dbgTx').addEventListener('keydown', e => { if (e.key === 'Enter') $('dbgSend').click(); });
 
   updateStart();
   log('页面就绪，等待连接设备');
