@@ -17,6 +17,7 @@
   } while (0)
 
 static std::vector<uint8_t> lineBuf;   // 控制行拼行缓冲（rule.set 可到 8KB）
+static uint32_t lineStartMs = 0;       // 拼行开始时刻（超时自愈用）
 
 static void sendLine(const String &s)
 {
@@ -137,6 +138,22 @@ static void handleLine(const uint8_t *d, int n)
 static bool ctrlHook(const uint8_t *d, int n)
 {
   if (n <= 0) return false;
+  // 拼行超时自愈：半截行卡住 500ms 就了结（APP 忘发 \n / 写半截后不再来数据）。
+  // 不了结的话 lineBuf 永远非空，之后所有手机数据都会被当成控制行续包吞掉。
+  if (lineBuf.size() && millis() - lineStartMs > 500)
+  {
+    String s;
+    s.concat((const char *)lineBuf.data(), lineBuf.size());
+    s.trim();
+    JsonDocument probe;
+    bool isCmd = (deserializeJson(probe, s) == DeserializationError::Ok) && probe["cmd"].is<const char *>();
+    if (isCmd)
+      handleLine(lineBuf.data(), (int)lineBuf.size());   // 完整 JSON 命令但没带 \n：照样执行
+    else
+      for (auto b : lineBuf) relayPassThrough(&b, 1);    // 不是命令：整段透传放行
+    lineBuf.clear();
+    ACLOG("line timeout, cmd=%d len=%d\n", (int)isCmd, (int)s.length());
+  }
   if (!lineBuf.size() && d[0] != '{') return false;
   for (int i = 0; i < n; i++)
   {
@@ -146,6 +163,7 @@ static bool ctrlHook(const uint8_t *d, int n)
       relayPassThrough(&c, 1);   // 行结束后残留的透传字节（罕见）
       continue;
     }
+    if (!lineBuf.size()) lineStartMs = millis();
     lineBuf.push_back(c);
     if (c == '\n')
     {
