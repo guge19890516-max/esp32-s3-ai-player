@@ -168,6 +168,24 @@ String cfgGetRaw(const CfgItem &it)
     p.end();
     return v;
   }
+  if (!strcmp(it.key, "dec.push") || !strcmp(it.key, "dec.csv") ||
+      !strcmp(it.key, "sim.io") || !strcmp(it.key, "sim.te"))
+  {
+    Preferences p;
+    p.begin("cfg", true);
+    bool on = p.getBool(it.key, false);
+    p.end();
+    return on ? "1" : "0";
+  }
+  if (!strcmp(it.key, "sim.cnt") || !strcmp(it.key, "sim.mode") || !strcmp(it.key, "sim.mask"))
+  {
+    Preferences p;
+    p.begin("cfg", true);
+    String def = !strcmp(it.key, "sim.cnt") ? "8" : !strcmp(it.key, "sim.mode") ? "随机" : "01";
+    String v = p.getString(it.key, def);
+    p.end();
+    return v;
+  }
   return String();
 }
 

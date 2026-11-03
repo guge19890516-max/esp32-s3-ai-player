@@ -2,6 +2,7 @@
 #include "serial_link.h"
 #include "log_store.h"
 #include "log_tee.h"
+#include "cfg_table.h"
 #include <ArduinoJson.h>
 #include <SD_MMC.h>
 
@@ -222,6 +223,7 @@ static bool saveActive()
 
 void re::reBegin()
 {
+  gPush = cfgFlag("dec.push");   // 重启恢复推送状态（app_ctrl/解码页改动时已持久化到 NVS）
   if (!lsEnsureMount()) return;
   String an;
   if (!readFile("/rules/_active.txt", an)) return;
