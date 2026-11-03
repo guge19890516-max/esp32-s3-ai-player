@@ -12,6 +12,7 @@
 #include <NimBLEDevice.h>
 // resume 复用路径需要：补做 createServer 首次新建时才做的 GATT 库表初始化
 #include "nimble/nimble/host/include/host/ble_gatt.h"
+#include "nimble/nimble/host/include/host/ble_att.h"
 #include "nimble/nimble/host/services/gap/include/services/gap/ble_svc_gap.h"
 #include "nimble/nimble/host/services/gatt/include/services/gatt/ble_svc_gatt.h"
 #include <esp_heap_caps.h>
@@ -61,6 +62,18 @@ static uint32_t lastTxMs = 0;
 static uint8_t tcpRxBuf[1024];
 static slRxHook_t rxHook = nullptr;
 static slCtrlHook_t ctrlHook = nullptr;
+static uint16_t gConnHandle = 0xFFFF;   // 当前手机连接句柄（发送分片按对端 MTU 算）
+
+// BLE 发送分片长度：按对端协商后的实际 MTU 算。
+// 手机没请求 MTU 时默认 23 → 每包只能带 20 字节，notify 直接发 128 字节会被截断丢数据。
+// APP 请求 MTU 247 后这里自动变成 244（上限仍是 TX_CHUNK=128 的队列项容量）。
+static int bleChunkLen()
+{
+  if (gConnHandle == 0xFFFF) return TX_CHUNK;
+  uint16_t mtu = ble_att_mtu(gConnHandle);
+  if (mtu < 23) return 20;
+  return min((int)TX_CHUNK, (int)mtu - 3);
+}
 
 void slSetRxHook(slRxHook_t fn) { rxHook = fn; }
 void slSetCtrlHook(slCtrlHook_t fn) { ctrlHook = fn; }
@@ -87,6 +100,7 @@ class SrvCb : public NimBLEServerCallbacks
   void onConnect(NimBLEServer *s, ble_gap_conn_desc *desc) override
   {
     bleConnected = true;
+    gConnHandle = desc->conn_handle;   // 记住连接句柄：发送分片按对端实际 MTU 算
     s->updateConnParams(desc->conn_handle,
                         12,    // 最小间隔 15ms（单位 1.25ms）
                         24,    // 最大间隔 30ms
@@ -96,6 +110,7 @@ class SrvCb : public NimBLEServerCallbacks
   void onDisconnect(NimBLEServer *s) override
   {
     bleConnected = false;
+    gConnHandle = 0xFFFF;
     if (!bleDown) NimBLEDevice::startAdvertising();   // 挂起拆栈期间禁止重启广播
   }
 };
@@ -347,11 +362,12 @@ bool slSendRaw(const uint8_t *d, int n)
   if (mode == LINK_BLE)
   {
     if (!bleConnected || !txChar || !txQ) return false;
+    int chunk = bleChunkLen();
     // 只入队，由 slPoll() 每 10ms 送一片，避免 delay(20) 卡住主循环
-    for (int i = 0; i < n; i += TX_CHUNK)
+    for (int i = 0; i < n; i += chunk)
     {
       TxItem it;
-      it.len = (uint16_t)min(TX_CHUNK, n - i);
+      it.len = (uint16_t)min(chunk, n - i);
       memcpy(it.data, d + i, it.len);
       if (xQueueSend(txQ, &it, 0) != pdTRUE) return i > 0;
     }
