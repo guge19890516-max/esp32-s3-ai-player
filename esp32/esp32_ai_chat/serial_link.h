@@ -23,6 +23,9 @@ bool slSendRaw(const uint8_t *d, int n);   // 二进制转发到手机（蓝牙�
 // 收到手机/串口数据的钩子（slPoll 上下文，BLE/TCP 通用）：蓝牙中继反向透传在这里接
 typedef void (*slRxHook_t)(const uint8_t *d, int n);
 void slSetRxHook(slRxHook_t fn);
+// 控制行钩子（仅 BLE 写路径，先于记帧/透传钩子）：返回 true=本包已消费（APP 控制行）
+typedef bool (*slCtrlHook_t)(const uint8_t *d, int n);
+void slSetCtrlHook(slCtrlHook_t fn);
 String slLocalIp();
 void slOtaSuspend();
 void slOtaResume();

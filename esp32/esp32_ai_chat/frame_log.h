@@ -17,6 +17,10 @@ struct FrameRec
 extern std::vector<FrameRec> frames;
 extern bool flHexMode;
 
+// 帧旁路钩子：每帧（含原始字节）在入列表后回调一次，log_store 落盘 / 规则引擎解码在这里接
+typedef void (*flTap_t)(bool rx, uint32_t ms, const uint8_t *d, int n);
+void flSetTap(flTap_t fn);
+
 void flBegin();
 void flAddRx(const uint8_t *d, int n);
 void flAddRxText(const String &s);

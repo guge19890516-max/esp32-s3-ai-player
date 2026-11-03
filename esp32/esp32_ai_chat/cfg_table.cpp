@@ -56,6 +56,9 @@ static const CfgItem TABLE[] = {
     {"relay.name", "蓝牙中继", "目标名称前缀", CT_STR, 0, 0, nullptr, 0, "BT04E"},
     {"relay.pass", "蓝牙中继", "串口透传(手机→模块)", CT_BOOL, 0, 0, nullptr, 0, "0"},
     {"relay.tx", "蓝牙中继", "屏幕发送目标", CT_ENUM, 0, 0, "手机+模块|仅手机|仅模块", 0, "手机+模块"},
+    // 协议解码：APP 下发规则（docs/app-protocol.md），事件推送到手机、解码结果落盘
+    {"dec.push", "协议解码", "解码事件推送", CT_BOOL, 0, 0, nullptr, 0, "0"},
+    {"dec.csv", "协议解码", "decoded.csv 落盘", CT_BOOL, 0, 0, nullptr, 0, "0"},
 };
 #define TABLE_N (sizeof(TABLE) / sizeof(TABLE[0]))
 

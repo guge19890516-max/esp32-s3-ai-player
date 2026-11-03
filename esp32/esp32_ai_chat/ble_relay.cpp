@@ -310,3 +310,9 @@ bool relaySend(const uint8_t *d, int n)
   if (!writeChar || !connectedFlag || n <= 0) return false;
   return writeChar->writeValue((uint8_t *)d, n, false);   // 无应答写，吞吐优先
 }
+
+void relayPassThrough(const uint8_t *d, int n)
+{
+  if (!d || n <= 0) return;
+  if (relayPassOn() && relayConnected()) relaySend(d, n);
+}

@@ -18,8 +18,11 @@
 #include "bt_module.h"
 #include "ble_relay.h"
 #include "rec_store.h"
+#include "log_store.h"
+#include "rule_engine.h"
+#include "app_ctrl.h"
 
-enum Screen : uint8_t { S_HOME, S_CHAT, S_SETTINGS, S_WIFI, S_WIFIPASS, S_API, S_XIAOZHI, S_SERIAL, S_FRAMES, S_AIANA, S_OTA, S_OTAURL, S_BMS, S_STATUS, S_CONF, S_BTMOD, S_RELAY, S_MODELS };
+enum Screen : uint8_t { S_HOME, S_CHAT, S_SETTINGS, S_WIFI, S_WIFIPASS, S_API, S_XIAOZHI, S_SERIAL, S_FRAMES, S_AIANA, S_OTA, S_OTAURL, S_BMS, S_STATUS, S_CONF, S_BTMOD, S_RELAY, S_MODELS, S_DECODE };
 static Screen scr = S_CHAT;
 
 static bool dirtyFull = true;
@@ -487,6 +490,7 @@ const char *t = (scr == S_SETTINGS) ? "设置" : (scr == S_WIFI) ? "WiFi 设置"
                                      : (scr == S_RELAY)           ? "蓝牙中继"
                                      : (scr == S_MODELS)          ? "模型列表"
                                      : (scr == S_STATUS)          ? "设备状态"
+                                     : (scr == S_DECODE)          ? "报文解码"
                                                                    : "API 设置";
     drawTextAt(70, centerBaseY(0, TITLE_H), t, COL_TEXT, COL_PANEL);
   }
@@ -494,26 +498,27 @@ const char *t = (scr == S_SETTINGS) ? "设置" : (scr == S_WIFI) ? "WiFi 设置"
 
 static void drawSettingsBody()
 {
-  // 11 行：行高 36、步进 40，最后一行 440..476，全部在 480 屏内
+  // 12 行：行高 32、步进 36，最后一行 436..468，全部在 480 屏内
   struct Row { int y; const char *label; };
-  Row rows[11] = {
+  Row rows[12] = {
     {40, "WiFi 设置"},
-    {80, "AI 接口设置"},
-    {120, "蓝牙模块"},
-    {160, "蓝牙中继"},
-    {200, "电池监测 (BMS)"},
-    {240, "固件升级 (OTA)"},
-    {280, "设备状态"},
-    {320, "配置项"},
-    {360, "清除聊天记录"},
+    {76, "AI 接口设置"},
+    {112, "蓝牙模块"},
+    {148, "蓝牙中继"},
+    {184, "报文解码"},
+    {220, "电池监测 (BMS)"},
+    {256, "固件升级 (OTA)"},
+    {292, "设备状态"},
+    {328, "配置项"},
+    {364, "清除聊天记录"},
     {400, "重启设备"},
-    {440, "返回主页"},
+    {436, "返回主页"},
   };
   for (auto &r : rows)
   {
-    gfx->fillRoundRect(3, r.y, 314, 36, 8, COL_PANEL);
-    drawTextAt(14, centerBaseY(r.y, 36), r.label, COL_TEXT, COL_PANEL);
-    drawTextAt(296, centerBaseY(r.y, 36), ">", COL_SUB, COL_PANEL);
+    gfx->fillRoundRect(3, r.y, 314, 32, 8, COL_PANEL);
+    drawTextAt(14, centerBaseY(r.y, 32), r.label, COL_TEXT, COL_PANEL);
+    drawTextAt(296, centerBaseY(r.y, 32), ">", COL_SUB, COL_PANEL);
   }
 }
 
@@ -1325,8 +1330,9 @@ static void drawRelayBody()
     int ti = cfgIndexOf("relay.tx");
     String tgt = ti >= 0 ? cfgGetRaw(cfgAt(ti)) : String("手机+模块");
     drawTextAt(12, 224, "发送目标 " + tgt + "（配置项可改）", COL_SUB, COL_PANEL);
-    drawBtn(3, 268, 154, 40, "查看报文", COL_ACCENT, 0xFFFF);
-    drawBtn(163, 268, 154, 40, "断开连接", COL_ERR_BG, COL_ERR_TX);
+    drawBtn(3, 268, 102, 40, "查看报文", COL_KEY_FN, COL_TEXT);
+    drawBtn(109, 268, 102, 40, "解码", COL_ACCENT, 0xFFFF);
+    drawBtn(215, 268, 102, 40, "断开连接", COL_ERR_BG, COL_ERR_TX);
     drawBtn(3, 440, 314, 40, "返回", COL_KEY_FN, COL_TEXT);
     return;
   }
@@ -1354,6 +1360,168 @@ static void drawRelayBody()
   if (!n && !relayScanActive())
     drawTextAt(12, rowY + 6, "开启中继后将自动扫描目标模块", COL_SUB, COL_BG);
   drawBtn(3, 440, 314, 40, "返回", COL_KEY_FN, COL_TEXT);
+}
+
+// —— 报文解码页（S_DECODE）：上半当前值按设备分块，下半解码历史（BMS 页同风格）——
+static std::vector<String> decLines;   // 解码历史（最新在尾部，最多 40 条）
+static int decScroll = 0;              // 历史上卷像素
+static int decDevSel = 0;              // 选中的设备下标（多设备规则）
+
+static void decPushHistory(const String &s)
+{
+  if (decLines.size() > 39) decLines.erase(decLines.begin());
+  decLines.push_back(s);
+  decScroll = 0;
+}
+
+static void drawDecodeBody()
+{
+  if (!re::hasRule())
+  {
+    gfx->fillRoundRect(3, 42, 314, 120, 8, COL_PANEL);
+    drawTextAt(12, 70, "还没有协议规则", COL_TEXT, COL_PANEL);
+    drawTextAt(12, 96, "手机 APP 连上后用 AI 分析报文", COL_SUB, COL_PANEL);
+    drawTextAt(12, 120, "生成规则并下发（rule.set）即可在此显示", COL_SUB, COL_PANEL);
+    drawBtn(3, 440, 314, 40, "返回", COL_KEY_FN, COL_TEXT);
+    return;
+  }
+
+  // 规则信息卡
+  gfx->fillRoundRect(3, 42, 314, 44, 8, COL_PANEL);
+  drawTextAt(12, 54, "规则", COL_SUB, COL_PANEL);
+  drawTextAt(52, 54, fitTail(re::ruleName(), 254), COL_ACCENT, COL_PANEL);
+  String st = String("设备 ") + re::devCount() + " · 落盘 " + (lsActive() ? lsSession() : String("停"));
+  drawTextAt(12, 76, fitTail(st, 296), COL_SUB, COL_PANEL);
+
+  int top = 94;
+  int nd = re::devCount();
+  if (decDevSel >= nd) decDevSel = nd - 1;
+  if (decDevSel < 0) decDevSel = 0;
+
+  // 多设备：设备选择 chips
+  if (nd > 1)
+  {
+    int w = min(58, 304 / nd);
+    for (int i = 0; i < nd && i < 5; i++)
+    {
+      int x = 3 + i * (w + 4);
+      String lab = "D" + String(re::devAddrAt(i));
+      drawBtn(x, top, w, 30, lab.c_str(), i == decDevSel ? COL_ACCENT : COL_KEY_FN, i == decDevSel ? 0xFFFF : COL_TEXT);
+    }
+    top += 38;
+  }
+
+  // 当前值：两列（每行 26px），最多显示可见行数
+  int rows = max(1, (300 - top) / 26);
+  int nf = re::fieldCount();
+  int dev = re::devAddrAt(decDevSel);
+  uint32_t ms = re::curMs(dev);
+  for (int r = 0; r < rows; r++)
+  {
+    for (int c = 0; c < 2; c++)
+    {
+      int fi = r * 2 + c;
+      if (fi >= nf) break;
+      int x = 3 + c * 158;
+      gfx->fillRoundRect(x, top + r * 26, 154, 22, 5, COL_PANEL);
+      drawTextAt(x + 8, top + r * 26 + 18, fitTail(re::fieldAt(fi).name, 70), COL_SUB, COL_PANEL);
+      String v = re::curVal(dev, fi);
+      if (v.length())
+      {
+        int vw = textWidth(v);
+        drawTextAt(x + 148 - min(vw, 74), top + r * 26 + 18, v, COL_TEXT, COL_PANEL);
+      }
+      else drawTextAt(x + 148 - 36, top + r * 26 + 18, "--", COL_LINE, COL_PANEL);
+    }
+  }
+  if (nd)
+  {
+    String t = "更新于 " + flTime(ms) + (nd > 1 ? String("  D") + dev : String(""));
+    drawTextAt(12, 302, fitTail(t, 296), COL_SUB, COL_BG);
+  }
+
+  // 历史卡（下半）：显示 decLines 尾部若干行
+  gfx->fillRoundRect(3, 314, 314, 118, 8, COL_PANEL);
+  drawTextAt(12, 328, "历史", COL_SUB, COL_PANEL);
+  int viewLines = 4;
+  int total = (int)decLines.size();
+  int maxScroll = max(0, total - viewLines) * 20;
+  if (decScroll > maxScroll) decScroll = maxScroll;
+  int startIdx = total - viewLines - decScroll / 20;
+  if (startIdx < 0) startIdx = 0;
+  for (int i = 0; i < viewLines && startIdx + i < total; i++)
+    drawTextAt(12, 350 + i * 20, fitTail(decLines[startIdx + i], 296), COL_TEXT, COL_PANEL);
+  if (total > viewLines)
+    drawTextAt(266, 328, total - viewLines - decScroll / 20 > 0 ? "↑更多" : "到底", COL_SUB, COL_PANEL);
+
+  drawBtn(3, 440, 100, 40, "返回", COL_KEY_FN, COL_TEXT);
+  drawBtn(109, 440, 100, 40, re::pushOn() ? "推送:开" : "推送:关", re::pushOn() ? COL_OK : COL_KEY_FN, re::pushOn() ? 0xFFFF : COL_TEXT);
+  drawBtn(215, 440, 102, 40, "清历史", COL_KEY_FN, COL_TEXT);
+}
+
+static void handleDecodeTouch(bool press, bool release, bool down, int x, int y)
+{
+  if (press)
+  {
+    if (ptIn(x, y, 3, 4, 56, 28)) { gotoScreen(S_SETTINGS); return; }
+    if (ptIn(x, y, 3, 440, 100, 40)) { gotoScreen(S_SETTINGS); return; }
+    if (re::hasRule())
+    {
+      if (ptIn(x, y, 109, 440, 100, 40))
+      {
+        re::setPush(!re::pushOn());
+        int i = cfgIndexOf("dec.push");
+        if (i >= 0)
+        {
+          String e;
+          cfgSet(cfgAt(i), re::pushOn() ? "1" : "0", e);
+        }
+        showToast(re::pushOn() ? "解码事件推送已开" : "解码事件推送已关");
+        dirtyFull = true;
+        return;
+      }
+      if (ptIn(x, y, 215, 440, 102, 40)) { decLines.clear(); decScroll = 0; dirtyFull = true; return; }
+
+      // 设备 chips 点选
+      int nd = re::devCount();
+      if (nd > 1)
+      {
+        int w = min(58, 304 / nd);
+        for (int i = 0; i < nd && i < 5; i++)
+        {
+          if (ptIn(x, y, 3 + i * (w + 4), 94, w, 30)) { decDevSel = i; dirtyFull = true; return; }
+        }
+      }
+    }
+  }
+  // 历史区拖动上卷
+  static int dragStartY = 0, scrollAtStart = 0;
+  static bool dragging = false;
+  static bool wasDown = false;
+  if (down && y >= 314 && y < 432)
+  {
+    if (!wasDown) { dragging = true; dragStartY = y; scrollAtStart = decScroll; }
+    if (dragging)
+    {
+      int dy = y - dragStartY;
+      if (dy)
+      {
+        int total = (int)decLines.size();
+        int maxScroll = max(0, total - 4) * 20;
+        decScroll = scrollAtStart + dy;
+        if (decScroll < 0) decScroll = 0;
+        if (decScroll > maxScroll) decScroll = maxScroll;
+        dirtyFull = true;
+      }
+    }
+    wasDown = true;
+    return;
+  }
+  else if (!down)
+  {
+    wasDown = false;
+    dragging = false;
+  }
 }
 
 static void drawRssi(int x, int y, int rssi)
@@ -1680,6 +1848,9 @@ static void drawBody()
   case S_MODELS:
     drawModelsBody();
     break;
+  case S_DECODE:
+    drawDecodeBody();
+    break;
   case S_CHAT:
     chatRender(CHAT_TOP, chatViewBot() - CHAT_TOP, chatScroll, aiBusy(), lastBusyPhase % 3);
     break;
@@ -1846,14 +2017,15 @@ static void handleSettingsTouch(bool press, int x, int y)
   if (!press) return;
   if (ptIn(x, y, 3, 4, 56, 28)) { releaseGuard = true; gotoScreen(S_HOME); return; }
   if (ptIn(x, y, 3, 40, 314, 36)) { releaseGuard = true; scanStart(); gotoScreen(S_WIFI); return; }
-  if (ptIn(x, y, 3, 80, 314, 36)) { releaseGuard = true; gotoScreen(S_API); return; }
-  if (ptIn(x, y, 3, 120, 314, 36)) { releaseGuard = true; gotoScreen(S_BTMOD); return; }
-  if (ptIn(x, y, 3, 160, 314, 36)) { releaseGuard = true; gotoScreen(S_RELAY); return; }
-  if (ptIn(x, y, 3, 200, 314, 36)) { releaseGuard = true; gotoScreen(S_BMS); return; }
-  if (ptIn(x, y, 3, 240, 314, 36)) { releaseGuard = true; gotoScreen(S_OTA); return; }
-  if (ptIn(x, y, 3, 280, 314, 36)) { releaseGuard = true; gotoScreen(S_STATUS); return; }
-  if (ptIn(x, y, 3, 320, 314, 36)) { releaseGuard = true; confScroll = 0; gotoScreen(S_CONF); return; }
-  if (ptIn(x, y, 3, 360, 314, 36)) { dlgClear = true; dirtyFull = true; return; }
+  if (ptIn(x, y, 3, 76, 314, 36)) { releaseGuard = true; gotoScreen(S_API); return; }
+  if (ptIn(x, y, 3, 112, 314, 36)) { releaseGuard = true; gotoScreen(S_BTMOD); return; }
+  if (ptIn(x, y, 3, 148, 314, 36)) { releaseGuard = true; gotoScreen(S_RELAY); return; }
+  if (ptIn(x, y, 3, 184, 314, 36)) { releaseGuard = true; gotoScreen(S_DECODE); return; }
+  if (ptIn(x, y, 3, 220, 314, 36)) { releaseGuard = true; gotoScreen(S_BMS); return; }
+  if (ptIn(x, y, 3, 256, 314, 36)) { releaseGuard = true; gotoScreen(S_OTA); return; }
+  if (ptIn(x, y, 3, 292, 314, 36)) { releaseGuard = true; gotoScreen(S_STATUS); return; }
+  if (ptIn(x, y, 3, 328, 314, 36)) { releaseGuard = true; confScroll = 0; gotoScreen(S_CONF); return; }
+  if (ptIn(x, y, 3, 364, 314, 36)) { dlgClear = true; dirtyFull = true; return; }
   if (ptIn(x, y, 3, 400, 314, 36))
   {
     showToast("正在重启...");
@@ -1861,7 +2033,7 @@ static void handleSettingsTouch(bool press, int x, int y)
     delay(500);
     ESP.restart();
   }
-  if (ptIn(x, y, 3, 440, 314, 36)) { gotoScreen(S_HOME); }
+  if (ptIn(x, y, 3, 436, 314, 36)) { gotoScreen(S_HOME); }
 }
 
 static void handleWifiTouch(bool press, bool release, bool down, int x, int y)
@@ -2332,6 +2504,7 @@ static void routeTouch(bool press, bool release, bool down, int x, int y)
   case S_CONF: handleConfTouch(press, release, down, x, y); break;
   case S_BTMOD: handleBtmodTouch(press, release, down, x, y); break;
   case S_MODELS: handleModelsTouch(press, release, down, x, y); break;
+  case S_DECODE: handleDecodeTouch(press, release, down, x, y); break;
   case S_RELAY:
     if (press)
     {
@@ -2353,8 +2526,9 @@ static void routeTouch(bool press, bool release, bool down, int x, int y)
       if (ptIn(x, y, 163, 104, 154, 40)) { relayRescan(); dirtyFull = true; return; }
       if (relayConnected())
       {
-        if (ptIn(x, y, 3, 268, 154, 40)) { gotoScreen(S_SERIAL); return; }
-        if (ptIn(x, y, 163, 268, 154, 40)) { relayDisconnect(); dirtyFull = true; return; }
+        if (ptIn(x, y, 3, 268, 102, 40)) { gotoScreen(S_SERIAL); return; }
+        if (ptIn(x, y, 109, 268, 102, 40)) { gotoScreen(S_DECODE); return; }
+        if (ptIn(x, y, 215, 268, 102, 40)) { relayDisconnect(); dirtyFull = true; return; }
       }
       else   // 点列表行 → 连接该设备
       {
@@ -2454,6 +2628,18 @@ void setup()
   touchInit();
   aiBegin();
   flBegin();
+  flSetTap([](bool rx, uint32_t ms, const uint8_t *d, int n) {
+    lsFrame(rx, ms, d, n);   // frames.jsonl（会话开着才写）
+    if (!rx) return;
+    re::DecResult r;
+    re::tapFrame(rx, ms, d, n, r);   // 规则解码 + evt:dec 推送（内部判 dec.push）
+    if (!r.ok) return;
+    lsDecoded(ms, r.dev, r.csvVals);
+    String h = flTime(ms);
+    if (re::devCount() > 1) h += " D" + String(r.dev);
+    decPushHistory(h + " " + r.line);
+    if (scr == S_DECODE) dirtyFull = true;
+  });
   BOOTLOG("[boot] stage: ai ok\n");
   STK("ai");
   WiFi.mode(WIFI_STA);
@@ -2465,6 +2651,9 @@ void setup()
   slBegin("ESP32-S3-AI");     // 建 server + NUS 服务（不广播）
   drawSplash("初始化蓝牙中继...");
   relayBegin();               // 蓝牙主机客户端（连蓝牙串口模块收报文）
+  acInit();                   // NUS 控制行协议（接管 ctrl 钩子，透传仍走 rxHook）
+  lsBegin();                  // TF 落盘（挂载在开会话时才做）
+  re::reBegin();              // 从 TF 恢复上次激活的解码规则
   STK("ble");
   drawSplash("启动 OTA...");
   otaBleBegin();              // 建蓝牙 OTA 服务（不广播）
@@ -2550,6 +2739,16 @@ void loop()
   otaHttpPoll();   // 把 WiFi 升级地址同步到蓝牙"信息"特征，网页据此自动填 IP
   bms::poll();
   relayPoll();
+
+  // TF 会话：中继连上自动开，断开收尾（APP 也可 log.start/stop 手动控制）
+  lsPoll();
+  {
+    static bool lastRelayConn = false;
+    bool rc = relayConnected();
+    if (rc && !lastRelayConn && !lsActive()) lsStart("relay");
+    else if (!rc && lastRelayConn && lsActive()) lsStop();
+    lastRelayConn = rc;
+  }
 
   // BMS 扫描页：列表实时在变，未连接时每 500ms 重绘一次
   if (scr == S_BMS && !bms::hasData())

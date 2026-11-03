@@ -31,3 +31,4 @@ bool relayConnectAddr(const NimBLEAddress &a);   // 点选连接（异步）
 void relayDisconnect();
 
 bool relaySend(const uint8_t *d, int n);      // 手机数据 → 模块 FFE2（透传）
+void relayPassThrough(const uint8_t *d, int n);   // 按透传开关转发（app_ctrl 控制行残留字节用）

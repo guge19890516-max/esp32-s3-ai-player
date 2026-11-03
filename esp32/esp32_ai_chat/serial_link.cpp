@@ -60,8 +60,10 @@ static QueueHandle_t txQ = nullptr;
 static uint32_t lastTxMs = 0;
 static uint8_t tcpRxBuf[1024];
 static slRxHook_t rxHook = nullptr;
+static slCtrlHook_t ctrlHook = nullptr;
 
 void slSetRxHook(slRxHook_t fn) { rxHook = fn; }
+void slSetCtrlHook(slCtrlHook_t fn) { ctrlHook = fn; }
 
 class RxCb : public NimBLECharacteristicCallbacks
 {
@@ -433,6 +435,7 @@ void slPoll()
     RxItem it;
     while (xQueueReceive(rxQ, &it, 0) == pdTRUE)
     {
+      if (ctrlHook && ctrlHook(it.data, it.len)) continue;   // APP 控制行：不记帧不透传
       if (mode == LINK_BLE) flAddRx(it.data, it.len);
       if (rxHook) rxHook(it.data, it.len);
     }

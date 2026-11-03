@@ -7,6 +7,9 @@ std::vector<FrameRec> frames;
 bool flHexMode = false;
 
 static SemaphoreHandle_t flMtx;
+static flTap_t flTap = nullptr;
+
+void flSetTap(flTap_t fn) { flTap = fn; }
 
 static String flTimeOf(uint32_t ms)
 {
@@ -94,7 +97,7 @@ void flBegin()
   flMtx = xSemaphoreCreateMutex();
 }
 
-static void flPush(bool rx, int len, const String &hex, const String &text, uint32_t ms)
+static void flPush(bool rx, int len, const String &hex, const String &text, uint32_t ms, const uint8_t *raw)
 {
   if (flMtx) xSemaphoreTake(flMtx, portMAX_DELAY);
   FrameRec r;
@@ -106,6 +109,7 @@ static void flPush(bool rx, int len, const String &hex, const String &text, uint
   frames.push_back(r);
   while ((int)frames.size() > FL_MAX_FRAMES) frames.erase(frames.begin());
   if (flMtx) xSemaphoreGive(flMtx);
+  if (flTap && raw && len > 0) flTap(rx, ms, raw, len);
 }
 
 void flAddRx(const uint8_t *d, int n)
@@ -113,35 +117,35 @@ void flAddRx(const uint8_t *d, int n)
   if (n <= 0) return;
   // 原始字节留 hex，文本视图按「接收编码」解码成 UTF-8（编码=UTF-8 时原样）
   String dec = tcDecodeRx(d, n);
-  flPush(true, n, flHexOf(d, n), flTextOfStr(dec), millis());
+  flPush(true, n, flHexOf(d, n), flTextOfStr(dec), millis(), d);
 }
 
 void flAddRxText(const String &s)
 {
   if (!s.length()) return;
   int n = s.length();
-  flPush(true, n, flHexOf((const uint8_t *)s.c_str(), n), s, millis());
+  flPush(true, n, flHexOf((const uint8_t *)s.c_str(), n), s, millis(), (const uint8_t *)s.c_str());
 }
 
 void flAddTx(const String &s)
 {
   if (!s.length()) return;
   int n = s.length();
-  flPush(false, n, flHexOf((const uint8_t *)s.c_str(), n), flTextOfStr(s), millis());
+  flPush(false, n, flHexOf((const uint8_t *)s.c_str(), n), flTextOfStr(s), millis(), (const uint8_t *)s.c_str());
 }
 
 void flAddTxRaw(const uint8_t *d, int n)
 {
   if (n <= 0) return;
   String dec = tcDecodeRx(d, n);
-  flPush(false, n, flHexOf(d, n), flTextOfStr(dec), millis());
+  flPush(false, n, flHexOf(d, n), flTextOfStr(dec), millis(), d);
 }
 
 // 文本发送：hex 记实际上链路的编码字节，text 记原始 UTF-8 输入（屏幕显示人话）
 void flAddTxWire(const String &utf8Text, const uint8_t *wire, int n)
 {
   if (n <= 0 && !utf8Text.length()) return;
-  flPush(false, n, flHexOf(wire, n), flTextOfStr(utf8Text), millis());
+  flPush(false, n, flHexOf(wire, n), flTextOfStr(utf8Text), millis(), n > 0 ? wire : nullptr);
 }
 
 void flClear()
