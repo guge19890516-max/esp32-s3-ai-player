@@ -5,6 +5,7 @@
 #include "log_store.h"
 #include "ota_update.h"
 #include "cfg_table.h"
+#include "sim_gen.h"
 #include "log_tee.h"
 #include <ArduinoJson.h>
 #include <vector>
@@ -106,6 +107,19 @@ static void handleCmd(const char *cmd, JsonDocument &doc)
     bool on = (cmd[4] == 'o');   // dec.on
     re::setPush(on);
     int i = cfgIndexOf("dec.push");
+    if (i >= 0)
+    {
+      String e;
+      cfgSet(cfgAt(i), on ? "1" : "0", e);
+    }
+    rspOk();
+    return;
+  }
+  if (!strcmp(cmd, "sim.on") || !strcmp(cmd, "sim.off"))
+  {
+    bool on = (cmd[4] == 'o');   // sim.on
+    sim::set(on);
+    int i = cfgIndexOf("sim.io");
     if (i >= 0)
     {
       String e;

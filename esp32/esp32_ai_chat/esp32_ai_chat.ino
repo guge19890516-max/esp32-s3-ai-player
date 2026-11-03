@@ -21,6 +21,7 @@
 #include "log_store.h"
 #include "rule_engine.h"
 #include "app_ctrl.h"
+#include "sim_gen.h"
 
 enum Screen : uint8_t { S_HOME, S_CHAT, S_SETTINGS, S_WIFI, S_WIFIPASS, S_API, S_XIAOZHI, S_SERIAL, S_FRAMES, S_AIANA, S_OTA, S_OTAURL, S_BMS, S_STATUS, S_CONF, S_BTMOD, S_RELAY, S_MODELS, S_DECODE };
 static Screen scr = S_CHAT;
@@ -2654,6 +2655,7 @@ void setup()
   acInit();                   // NUS 控制行协议（接管 ctrl 钩子，透传仍走 rxHook）
   lsBegin();                  // TF 落盘（挂载在开会话时才做）
   re::reBegin();              // 从 TF 恢复上次激活的解码规则
+  sim::begin();               // 模拟开关量帧（cfg sim.io）
   STK("ble");
   drawSplash("启动 OTA...");
   otaBleBegin();              // 建蓝牙 OTA 服务（不广播）
@@ -2739,6 +2741,7 @@ void loop()
   otaHttpPoll();   // 把 WiFi 升级地址同步到蓝牙"信息"特征，网页据此自动填 IP
   bms::poll();
   relayPoll();
+  sim::poll();   // 模拟开关量帧（开启时每 1.5s 一帧：上屏/落盘/解码/发手机）
 
   // TF 会话：中继连上自动开，断开收尾（APP 也可 log.start/stop 手动控制）
   lsPoll();

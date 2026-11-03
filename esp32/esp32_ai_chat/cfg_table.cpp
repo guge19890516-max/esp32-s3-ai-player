@@ -59,6 +59,7 @@ static const CfgItem TABLE[] = {
     // 协议解码：APP 下发规则（docs/app-protocol.md），事件推送到手机、解码结果落盘
     {"dec.push", "协议解码", "解码事件推送", CT_BOOL, 0, 0, nullptr, 0, "0"},
     {"dec.csv", "协议解码", "decoded.csv 落盘", CT_BOOL, 0, 0, nullptr, 0, "0"},
+    {"sim.io", "协议解码", "模拟开关量帧", CT_BOOL, 0, 0, nullptr, 0, "0"},
 };
 #define TABLE_N (sizeof(TABLE) / sizeof(TABLE[0]))
 
