@@ -102,9 +102,10 @@ static void handleCmd(const char *cmd, JsonDocument &doc)
     }
     return;
   }
+  // ".on"/".off" 后缀判断：cmd[4] 在 .on 和 .off 都是 'o'，必须比后缀
   if (!strcmp(cmd, "dec.on") || !strcmp(cmd, "dec.off"))
   {
-    bool on = (cmd[4] == 'o');   // dec.on
+    bool on = (cmd[strlen(cmd) - 1] == 'n');   // dec.on
     re::setPush(on);
     int i = cfgIndexOf("dec.push");
     if (i >= 0)
@@ -117,9 +118,22 @@ static void handleCmd(const char *cmd, JsonDocument &doc)
   }
   if (!strcmp(cmd, "sim.on") || !strcmp(cmd, "sim.off"))
   {
-    bool on = (cmd[4] == 'o');   // sim.on
+    bool on = (cmd[strlen(cmd) - 1] == 'n');   // sim.on
     sim::set(on);
     int i = cfgIndexOf("sim.io");
+    if (i >= 0)
+    {
+      String e;
+      cfgSet(cfgAt(i), on ? "1" : "0", e);
+    }
+    rspOk();
+    return;
+  }
+  if (!strcmp(cmd, "te.on") || !strcmp(cmd, "te.off"))
+  {
+    bool on = (cmd[strlen(cmd) - 1] == 'n');   // te.on
+    sim::setTe(on);
+    int i = cfgIndexOf("sim.te");
     if (i >= 0)
     {
       String e;

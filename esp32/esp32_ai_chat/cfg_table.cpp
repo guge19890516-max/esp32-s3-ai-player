@@ -60,6 +60,10 @@ static const CfgItem TABLE[] = {
     {"dec.push", "协议解码", "解码事件推送", CT_BOOL, 0, 0, nullptr, 0, "0"},
     {"dec.csv", "协议解码", "decoded.csv 落盘", CT_BOOL, 0, 0, nullptr, 0, "0"},
     {"sim.io", "协议解码", "模拟开关量帧", CT_BOOL, 0, 0, nullptr, 0, "0"},
+    {"sim.cnt", "协议解码", "开关路数(1-64)", CT_INT, 1, 64, nullptr, 0, "8"},
+    {"sim.mode", "协议解码", "开关模式", CT_ENUM, 0, 0, "随机|固定", 0, "随机"},
+    {"sim.mask", "协议解码", "开关位图(hex)", CT_STR, 0, 0, nullptr, 0, "01"},
+    {"sim.te", "协议解码", "模拟遥测帧", CT_BOOL, 0, 0, nullptr, 0, "0"},
 };
 #define TABLE_N (sizeof(TABLE) / sizeof(TABLE[0]))
 
@@ -312,6 +316,21 @@ bool cfgSet(const CfgItem &it, const String &val, String &err)
     Preferences p;
     p.begin("cfg", false);
     p.putBool(it.key, gUniBom);
+    p.end();
+  }
+  else if (!strcmp(it.key, "dec.push") || !strcmp(it.key, "dec.csv") ||
+           !strcmp(it.key, "sim.io") || !strcmp(it.key, "sim.te"))
+  {
+    Preferences p;
+    p.begin("cfg", false);
+    p.putBool(it.key, v == "1");
+    p.end();
+  }
+  else if (!strcmp(it.key, "sim.cnt") || !strcmp(it.key, "sim.mode") || !strcmp(it.key, "sim.mask"))
+  {
+    Preferences p;
+    p.begin("cfg", false);
+    p.putString(it.key, v);
     p.end();
   }
   else { err = "未映射的配置项"; return false; }
