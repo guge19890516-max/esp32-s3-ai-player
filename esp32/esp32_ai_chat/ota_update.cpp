@@ -345,7 +345,8 @@ bool otaSdUpdate()
 
   if (!Update.begin(sz, U_FLASH)) return fail("空间不足 " + String(Update.getError()));
 
-  uint8_t *buf = (uint8_t *)malloc(8192);
+  uint8_t *buf = (uint8_t *)ps_malloc(8192);   // 同 HTTP OTA：大缓冲走 PSRAM，不受内部堆碎片影响
+  if (!buf) buf = (uint8_t *)malloc(8192);
   if (!buf) return fail("内存不足");
 
   size_t total = 0;
@@ -575,7 +576,8 @@ static void bleFail(uint8_t code, const String &why)
 
 static void bleOtaTask(void *)
 {
-  uint8_t *buf = (uint8_t *)malloc(4096);
+  uint8_t *buf = (uint8_t *)ps_malloc(4096);   // PSRAM 优先
+  if (!buf) buf = (uint8_t *)malloc(4096);
   if (!buf)
   {
     vTaskDelete(nullptr);

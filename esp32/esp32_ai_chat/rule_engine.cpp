@@ -155,7 +155,7 @@ static bool applyRuleJson(const String &json, String &err)
 
   JsonArray fs = root["fields"];
   if (!fs || !fs.size()) { err = "missing fields"; return false; }
-  if (fs.size() > 24) { err = "too many fields (max 24)"; return false; }
+  if (fs.size() > 64) { err = "too many fields (max 64)"; return false; }
   for (JsonObject fo : fs)
   {
     Field f;

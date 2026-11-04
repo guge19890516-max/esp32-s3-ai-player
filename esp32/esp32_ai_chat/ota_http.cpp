@@ -11,7 +11,9 @@
 #include <freertos/task.h>
 
 #define HDR_MAX 2048
-#define BUF_MAX 4096
+// 接收缓冲从 PSRAM 分配：内部堆长期只剩 2 万左右，WiFi/HTTP 栈一挤就分配失败，
+// 这正是低内存状态下 OTA 报 write failed 的根因。PSRAM 8MB 充裕，顺便加大缓冲提速。
+#define BUF_MAX 16384
 
 static WiFiServer *srv = nullptr;
 static volatile bool writing = false;
@@ -503,7 +505,8 @@ static void handlePost(WiFiClient &c, const String &head)
     return;
   }
 
-  uint8_t *buf = (uint8_t *)malloc(BUF_MAX);
+  uint8_t *buf = (uint8_t *)ps_malloc(BUF_MAX);   // PSRAM 优先，PSRAM 不可用时退回内部堆
+  if (!buf) buf = (uint8_t *)malloc(BUF_MAX);
   if (!buf)
   {
     Update.abort();
