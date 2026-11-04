@@ -60,10 +60,42 @@ static String passDraft;   // WiFi 密码独立缓冲，不再借用聊天草稿
 static int editField = -1;
 static String editDraft;
 
-// 配置项页（S_CONF）：列表由 cfg_table 生成，点按编辑
+// 配置项页（S_CONF）：两级结构——先分类列表，点进组显示该组配置项
 static int confScroll = 0;
 static int confIdx = -1;      // >=0 表示正在键盘编辑第 confIdx 项
+static int confGroup = -1;    // -1=分类列表，>=0=正在显示的分组
 static String confDraft;
+
+// 分组信息：TABLE 内同组行连续排列
+static int confGroupCount()
+{
+  int n = 0;
+  const char *cur = nullptr;
+  for (int i = 0; i < cfgCount(); i++)
+  {
+    if (!cur || strcmp(cfgAt(i).group, cur) != 0) { cur = cfgAt(i).group; n++; }
+  }
+  return n;
+}
+
+static int confGroupStart(int g)   // 组 g 的第一个项索引
+{
+  int n = -1;
+  const char *cur = nullptr;
+  for (int i = 0; i < cfgCount(); i++)
+  {
+    if (!cur || strcmp(cfgAt(i).group, cur) != 0) { cur = cfgAt(i).group; n++; }
+    if (n == g) return i;
+  }
+  return 0;
+}
+
+static int confGroupLen(int g)
+{
+  int s = confGroupStart(g);
+  int e = (g + 1 < confGroupCount()) ? confGroupStart(g + 1) : cfgCount();
+  return e - s;
+}
 
 // 触摸抬起保护：按下时发生了跳页/退出编辑，就把同一次触摸的 release 吞掉，
 // 防止它落进新页面的列表被当成点选（配置项页“进页就弹编辑”的根因）
@@ -694,36 +726,56 @@ static void drawConfBody()
     return;
   }
 
-  int contentH = cfgCount() * ITEM_H;
+  // 两级列表：confGroup<0 显示分类，>=0 显示该组的配置项
+  int rows = (confGroup < 0) ? confGroupCount() : confGroupLen(confGroup);
+  int contentH = rows * ITEM_H;
   int viewH = SCREEN_H - 6 - LIST_TOP;
   int maxScroll = max(0, contentH - viewH);
   if (confScroll > maxScroll) confScroll = maxScroll;
   if (confScroll < 0) confScroll = 0;
-  for (int i = 0; i < cfgCount(); i++)
+
+  if (confGroup < 0)
   {
-    int iy = LIST_TOP + i * ITEM_H - confScroll;
-    if (iy + ITEM_H < LIST_TOP || iy > SCREEN_H) continue;
-    const CfgItem &it = cfgAt(i);
-    gfx->fillRoundRect(3, iy, 314, ITEM_H - 6, 8, COL_PANEL);
-    drawTextAt(14, iy + 15, it.label, COL_TEXT, COL_PANEL);
-    String t = (it.type == CT_STR) ? "文本" : (it.type == CT_INT) ? "数字"
-                                 : (it.type == CT_BOOL)           ? "开关"
-                                 : (it.type == CT_PAGE)           ? "进入"
-                                                                  : "选择";
-    drawTextAt(232, iy + 15, t, COL_SUB, COL_PANEL);
-    String v = cfgGetShow(it);
-    if (it.type == CT_BOOL || it.type == CT_PAGE)
+    for (int g = 0; g < confGroupCount(); g++)
     {
-      bool on = (v == "1");
-      if (it.type == CT_PAGE)
-        v = on ? "发帧中 >" : "已停止 >";
-      else
-        v = on ? "开" : "关";
-      drawTextAt(14, iy + 32, fitTail(v, 296), on ? COL_OK : COL_SUB, COL_PANEL);
-      continue;
+      int iy = LIST_TOP + g * ITEM_H - confScroll;
+      if (iy + ITEM_H < LIST_TOP || iy > SCREEN_H) continue;
+      int gs = confGroupStart(g);
+      gfx->fillRoundRect(3, iy, 314, ITEM_H - 6, 8, COL_PANEL);
+      drawTextAt(14, iy + 15, cfgAt(gs).group, COL_TEXT, COL_PANEL);
+      drawTextAt(14, iy + 32, String(confGroupLen(g)) + " 项 >", COL_SUB, COL_PANEL);
     }
-    if (!v.length()) v = "未设置";
-    drawTextAt(14, iy + 32, fitTail(v, 296), COL_SUB, COL_PANEL);
+  }
+  else
+  {
+    int gs = confGroupStart(confGroup);
+    for (int k = 0; k < confGroupLen(confGroup); k++)
+    {
+      int i = gs + k;
+      int iy = LIST_TOP + k * ITEM_H - confScroll;
+      if (iy + ITEM_H < LIST_TOP || iy > SCREEN_H) continue;
+      const CfgItem &it = cfgAt(i);
+      gfx->fillRoundRect(3, iy, 314, ITEM_H - 6, 8, COL_PANEL);
+      drawTextAt(14, iy + 15, it.label, COL_TEXT, COL_PANEL);
+      String t = (it.type == CT_STR) ? "文本" : (it.type == CT_INT) ? "数字"
+                                   : (it.type == CT_BOOL)           ? "开关"
+                                   : (it.type == CT_PAGE)           ? "进入"
+                                                                    : "选择";
+      drawTextAt(232, iy + 15, t, COL_SUB, COL_PANEL);
+      String v = cfgGetShow(it);
+      if (it.type == CT_BOOL || it.type == CT_PAGE)
+      {
+        bool on = (v == "1");
+        if (it.type == CT_PAGE)
+          v = on ? "发帧中 >" : "已停止 >";
+        else
+          v = on ? "开" : "关";
+        drawTextAt(14, iy + 32, fitTail(v, 296), on ? COL_OK : COL_SUB, COL_PANEL);
+        continue;
+      }
+      if (!v.length()) v = "未设置";
+      drawTextAt(14, iy + 32, fitTail(v, 296), COL_SUB, COL_PANEL);
+    }
   }
   drawScrollbar(SCREEN_W - 4, LIST_TOP, viewH, contentH, confScroll);
 }
@@ -879,7 +931,13 @@ static void handleConfTouch(bool press, bool release, bool down, int x, int y)
     return;
   }
 
-  if (press && ptIn(x, y, 3, 4, 56, 28)) { gotoScreen(S_SETTINGS); return; }
+  // 左上角返回：组内返回分类列表，分类列表返回设置页
+  if (press && ptIn(x, y, 3, 4, 56, 28))
+  {
+    if (confGroup >= 0) { confGroup = -1; confScroll = 0; dirtyFull = true; }
+    else gotoScreen(S_SETTINGS);
+    return;
+  }
 
   if (down && y >= LIST_TOP)
   {
@@ -887,8 +945,9 @@ static void handleConfTouch(bool press, bool release, bool down, int x, int y)
     int dy = y - dragStartY;
     if (dy)
     {
+      int rows = (confGroup < 0) ? confGroupCount() : confGroupLen(confGroup);
       int viewH = SCREEN_H - 6 - LIST_TOP;
-      int maxScroll = max(0, cfgCount() * ITEM_H - viewH);
+      int maxScroll = max(0, rows * ITEM_H - viewH);
       confScroll = scrollAtDragStart - dy;
       if (confScroll < 0) confScroll = 0;
       if (confScroll > maxScroll) confScroll = maxScroll;
@@ -899,9 +958,22 @@ static void handleConfTouch(bool press, bool release, bool down, int x, int y)
 
   if (release && movedDist < 10 && y >= LIST_TOP)
   {
-    int idx = (y + confScroll - LIST_TOP) / ITEM_H;
-    if (idx >= 0 && idx < cfgCount())
+    if (confGroup < 0)
     {
+      int g = (y + confScroll - LIST_TOP) / ITEM_H;
+      if (g >= 0 && g < confGroupCount())
+      {
+        confGroup = g;
+        confScroll = 0;
+        dirtyFull = true;
+      }
+      return;
+    }
+
+    int k = (y + confScroll - LIST_TOP) / ITEM_H;
+    if (k >= 0 && k < confGroupLen(confGroup))
+    {
+      int idx = confGroupStart(confGroup) + k;
       const CfgItem &it = cfgAt(idx);
       if (it.type == CT_PAGE)
       {
@@ -2240,7 +2312,7 @@ static void handleSettingsTouch(bool press, int x, int y)
   if (ptIn(x, y, 3, 220, 314, 36)) { releaseGuard = true; gotoScreen(S_BMS); return; }
   if (ptIn(x, y, 3, 256, 314, 36)) { releaseGuard = true; gotoScreen(S_OTA); return; }
   if (ptIn(x, y, 3, 292, 314, 36)) { releaseGuard = true; gotoScreen(S_STATUS); return; }
-  if (ptIn(x, y, 3, 328, 314, 36)) { releaseGuard = true; confScroll = 0; gotoScreen(S_CONF); return; }
+  if (ptIn(x, y, 3, 328, 314, 36)) { releaseGuard = true; confGroup = -1; confScroll = 0; gotoScreen(S_CONF); return; }
   if (ptIn(x, y, 3, 364, 314, 36)) { dlgClear = true; dirtyFull = true; return; }
   if (ptIn(x, y, 3, 400, 314, 36))
   {
