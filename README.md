@@ -4,6 +4,11 @@
 
 当前版本：**1.3.0**
 
+## 仓库结构
+
+- 本仓库（esp32-s3-ai-player）：仅固件与契约文档 `docs/`（App-ESP32 控制行协议、解析规则 Schema）
+- 手机 APP（FrameLens，Kotlin/Compose）已独立为单独仓库：https://github.com/guge19890516-max/framelens-app ，本地路径 `f:\ESP32\framelens-app`，不再存放于本仓库；两端以 `docs/app-protocol.md` 为唯一对齐契约
+
 ## 功能
 
 **AI 聊天**
