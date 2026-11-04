@@ -4,6 +4,8 @@
 #include "serial_link.h"
 #include "bms_client.h"
 #include "rec_store.h"
+#include "sim_gen.h"
+#include "rule_engine.h"
 
 #include <WiFi.h>
 #include <Preferences.h>
@@ -343,6 +345,10 @@ bool cfgSet(const CfgItem &it, const String &val, String &err)
     p.begin("cfg", false);
     p.putBool(it.key, v == "1");
     p.end();
+    // 同步内存态：这些开关有运行时镜像，只写 NVS 要重启才生效
+    if (!strcmp(it.key, "sim.io")) sim::set(v == "1");
+    else if (!strcmp(it.key, "sim.te")) sim::setTe(v == "1");
+    else if (!strcmp(it.key, "dec.push")) re::setPush(v == "1");
   }
   else if (!strcmp(it.key, "sim.cnt") || !strcmp(it.key, "sim.mode") || !strcmp(it.key, "sim.mask"))
   {
