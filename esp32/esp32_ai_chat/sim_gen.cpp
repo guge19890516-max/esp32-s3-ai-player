@@ -59,6 +59,7 @@ void sim::begin()
 {
   gOn = cfgFlag("sim.io");
   gTe = cfgFlag("sim.te");
+  gState = hexBits(cfgVal("sim.mask"));   // 位图从配置恢复（按钮页改过会写回）
 }
 
 void sim::set(bool on)
@@ -78,29 +79,27 @@ void sim::setTe(bool on)
 bool sim::on() { return gOn; }
 bool sim::teOn() { return gTe; }
 
+uint64_t sim::bits() { return gState; }
+
+void sim::setBits(uint64_t v) { gState = v; }
+
 // 开关量帧：01 03 <byteCount> <位图(大端)> CRC_LO CRC_HI
 static void sendIoFrame()
 {
   int cnt = cfgVal("sim.cnt").toInt();
   if (cnt < 1) cnt = 1;
   if (cnt > 64) cnt = 64;
-  String mode = cfgVal("sim.mode");
-  uint64_t st;
 
-  if (mode == "固定")
+  // 随机模式在当前位图上随机翻转 0~2 路（贴近真实开关动作，瞬态不写回配置）；
+  // 固定模式直接发当前位图（屏幕按钮页编辑的就是它）
+  uint64_t st = gState & bitsMask(cnt);
+  if (cfgVal("sim.mode") != "固定")
   {
-    st = hexBits(cfgVal("sim.mask")) & bitsMask(cnt);
-    gState = st;   // 固定模式下切回随机时，从 mask 起点继续翻转
-  }
-  else
-  {
-    // 随机：每帧随机翻转 0~2 路（更贴近真实开关动作）
-    st = gState & bitsMask(cnt);
     int flips = esp_random() % 3;
     for (int i = 0; i < flips; i++)
       st ^= 1ULL << (esp_random() % cnt);
-    gState = st;
   }
+  gState = st;
 
   int nb = (cnt + 7) / 8;
   uint8_t f[3 + 8 + 2];
@@ -118,28 +117,41 @@ static void sendIoFrame()
   flAddRx(f, len);
 }
 
-// 遥测帧：01 04 08 <电压u16BE> <电流> <功率> <温度> CRC_LO CRC_HI（13 字节）
+// 遥测帧：01 04 <2N> <通道值u16BE...> CRC_LO CRC_HI
+// 通道数/基准值可配（te.cnt 1~8 / te.ch1~te.ch8），波动 = 基准 ±1%（至少 ±1）
 static void sendTeFrame()
 {
-  int16_t jitter[4] = {15, 12, 80, 4};   // 各通道随机波动幅度（原始值）
-  uint16_t base[4] = {2200, 123, 2500, 265};   // 220.0V / 12.3A / 2500W / 26.5℃
-  uint8_t f[13];
+  int n = cfgVal("te.cnt").toInt();
+  if (n < 1) n = 1;
+  if (n > 8) n = 8;
+
+  uint8_t f[3 + 16 + 2];
   f[0] = 0x01;
   f[1] = 0x04;
-  f[2] = 0x08;
-  for (int i = 0; i < 4; i++)
+  f[2] = (uint8_t)(2 * n);
+  for (int i = 0; i < n; i++)
   {
-    int j = (int)(esp_random() % (2 * jitter[i] + 1)) - jitter[i];
-    uint16_t v = (uint16_t)(base[i] + j);
+    char k[8];
+    snprintf(k, sizeof(k), "te.ch%d", i + 1);
+    long base = cfgVal(k).toInt();
+    if (base < 0) base = 0;
+    if (base > 65535) base = 65535;
+    long jit = base / 100;
+    if (jit < 1) jit = 1;
+    long v = base + (long)(esp_random() % (2 * jit + 1)) - jit;
+    if (v < 0) v = 0;
+    if (v > 65535) v = 65535;
     f[3 + i * 2] = (uint8_t)(v >> 8);      // 大端
     f[4 + i * 2] = (uint8_t)(v & 0xFF);
   }
-  uint16_t crc = crc16(f, 11);
-  f[11] = (uint8_t)(crc & 0xFF);
-  f[12] = (uint8_t)(crc >> 8);
+  int len = 3 + 2 * n;
+  uint16_t crc = crc16(f, len);
+  f[len] = (uint8_t)(crc & 0xFF);
+  f[len + 1] = (uint8_t)(crc >> 8);
+  len += 2;
 
-  slSendRaw(f, 13);
-  flAddRx(f, 13);
+  slSendRaw(f, len);
+  flAddRx(f, len);
 }
 
 void sim::poll()

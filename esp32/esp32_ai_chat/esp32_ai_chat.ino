@@ -23,7 +23,7 @@
 #include "app_ctrl.h"
 #include "sim_gen.h"
 
-enum Screen : uint8_t { S_HOME, S_CHAT, S_SETTINGS, S_WIFI, S_WIFIPASS, S_API, S_XIAOZHI, S_SERIAL, S_FRAMES, S_AIANA, S_OTA, S_OTAURL, S_BMS, S_STATUS, S_CONF, S_BTMOD, S_RELAY, S_MODELS, S_DECODE };
+enum Screen : uint8_t { S_HOME, S_CHAT, S_SETTINGS, S_WIFI, S_WIFIPASS, S_API, S_XIAOZHI, S_SERIAL, S_FRAMES, S_AIANA, S_OTA, S_OTAURL, S_BMS, S_STATUS, S_CONF, S_BTMOD, S_RELAY, S_MODELS, S_DECODE, S_SIMIO, S_SIMTE };
 static Screen scr = S_CHAT;
 
 static bool dirtyFull = true;
@@ -708,12 +708,22 @@ static void drawConfBody()
     drawTextAt(14, iy + 15, it.label, COL_TEXT, COL_PANEL);
     String t = (it.type == CT_STR) ? "文本" : (it.type == CT_INT) ? "数字"
                                  : (it.type == CT_BOOL)           ? "开关"
+                                 : (it.type == CT_PAGE)           ? "进入"
                                                                   : "选择";
     drawTextAt(232, iy + 15, t, COL_SUB, COL_PANEL);
     String v = cfgGetShow(it);
-    if (it.type == CT_BOOL) v = (v == "1") ? "开" : "关";
+    if (it.type == CT_BOOL || it.type == CT_PAGE)
+    {
+      bool on = (v == "1");
+      if (it.type == CT_PAGE)
+        v = on ? "发帧中 >" : "已停止 >";
+      else
+        v = on ? "开" : "关";
+      drawTextAt(14, iy + 32, fitTail(v, 296), on ? COL_OK : COL_SUB, COL_PANEL);
+      continue;
+    }
     if (!v.length()) v = "未设置";
-    drawTextAt(14, iy + 32, fitTail(v, 296), it.type == CT_BOOL ? (cfgGetRaw(it) == "1" ? COL_OK : COL_SUB) : COL_SUB, COL_PANEL);
+    drawTextAt(14, iy + 32, fitTail(v, 296), COL_SUB, COL_PANEL);
   }
   drawScrollbar(SCREEN_W - 4, LIST_TOP, viewH, contentH, confScroll);
 }
@@ -893,6 +903,11 @@ static void handleConfTouch(bool press, bool release, bool down, int x, int y)
     if (idx >= 0 && idx < cfgCount())
     {
       const CfgItem &it = cfgAt(idx);
+      if (it.type == CT_PAGE)
+      {
+        gotoScreen(!strcmp(it.key, "sim.io") ? S_SIMIO : S_SIMTE);
+        return;
+      }
       if (it.type == CT_BOOL)
       {
         String cur = cfgGetRaw(it);
@@ -1375,6 +1390,200 @@ static void decPushHistory(const String &s)
   decScroll = 0;
 }
 
+// ===== 模拟开关量页（S_SIMIO）：路按钮网格，点击切换并与位图 hex 双向同步 =====
+
+static int simIoCnt()
+{
+  int i = cfgIndexOf("sim.cnt");
+  return constrain(i >= 0 ? cfgGetRaw(cfgAt(i)).toInt() : 8, 1, 64);
+}
+
+static String simIoMode()
+{
+  int i = cfgIndexOf("sim.mode");
+  return i >= 0 ? cfgGetRaw(cfgAt(i)) : String("随机");
+}
+
+static void simIoMaskSave()
+{
+  // 当前位图按路数转大端 hex 写回配置（与帧内数据区一致，"01"=路1开）
+  int nb = (simIoCnt() + 7) / 8;
+  uint64_t st = sim::bits();
+  char hex[17];
+  for (int i = 0; i < nb; i++)
+    snprintf(hex + i * 2, 3, "%02X", (unsigned)((st >> (8 * (nb - 1 - i))) & 0xFF));
+  String err;
+  int i = cfgIndexOf("sim.mask");
+  if (i >= 0) cfgSet(cfgAt(i), String(hex), err);
+}
+
+static void drawSimIoBody()
+{
+  bool run = sim::on();
+  drawTextAt(14, centerBaseY(4, 28), "← 模拟开关量", COL_TEXT, COL_BG);
+  String st = run ? "发帧中" : "已停止";
+  drawTextAt(240, centerBaseY(4, 28), st, run ? COL_OK : COL_SUB, COL_BG);
+  drawTextAt(12, 70, String("共 ") + simIoCnt() + " 路 · " + simIoMode() + "模式 · 点按钮切换开/关", COL_SUB, COL_BG);
+
+  // 路按钮网格：8 列 x 8 行，64 路一屏放完
+  int cnt = simIoCnt();
+  uint64_t bits = sim::bits();
+  for (int idx = 0; idx < cnt; idx++)
+  {
+    int r = idx / 8, c = idx % 8;
+    int x = 6 + c * 38, y = 84 + r * 43;
+    bool on = (bits >> idx) & 1ULL;
+    gfx->fillRect(x, y, 35, 40, on ? COL_OK : COL_PANEL_HI);
+    char lb[8];
+    snprintf(lb, sizeof(lb), "%d", idx + 1);
+    drawTextAt(x + 17 - textWidth(lb) / 2, centerBaseY(y, 40), lb, on ? 0x0000 : COL_SUB, on ? COL_OK : COL_PANEL_HI);
+  }
+
+  drawBtn(6, 436, 96, 40, run ? "发帧:开" : "发帧:关", run ? COL_OK : COL_KEY_FN, run ? 0xFFFF : COL_TEXT);
+  drawBtn(112, 436, 96, 40, simIoMode() == "固定" ? "固定" : "随机", COL_KEY_FN, COL_TEXT);
+  drawBtn(218, 436, 96, 40, "返回", COL_KEY_FN, COL_TEXT);
+}
+
+static void handleSimIoTouch(bool press, bool release, bool down, int x, int y)
+{
+  (void)down;
+  if (press && ptIn(x, y, 3, 4, 56, 28)) { gotoScreen(S_CONF); return; }
+
+  if (press && y >= 84 && y < 428)
+  {
+    int c = (x - 6) / 38, r = (y - 84) / 43;
+    if (c >= 0 && c < 8 && r >= 0 && r < 8)
+    {
+      int idx = r * 8 + c;
+      int bx = 6 + c * 38, by = 84 + r * 43;
+      if (idx < simIoCnt() && x >= bx && x < bx + 35 && y >= by && y < by + 40)
+      {
+        sim::setBits(sim::bits() ^ (1ULL << idx));
+        simIoMaskSave();
+        dirtyFull = true;
+      }
+    }
+    return;
+  }
+
+  if (press && y >= 436)
+  {
+    String err;
+    if (ptIn(x, y, 6, 436, 96, 40))
+    {
+      int i = cfgIndexOf("sim.io");
+      if (i >= 0) cfgSet(cfgAt(i), sim::on() ? "0" : "1", err);   // cfgSet 内同步内存开关
+      dirtyFull = true;
+    }
+    else if (ptIn(x, y, 112, 436, 96, 40))
+    {
+      int i = cfgIndexOf("sim.mode");
+      if (i >= 0) cfgSet(cfgAt(i), simIoMode() == "固定" ? "随机" : "固定", err);
+      dirtyFull = true;
+    }
+    else if (ptIn(x, y, 218, 436, 96, 40))
+      gotoScreen(S_CONF);
+  }
+}
+
+// ===== 模拟遥测页（S_SIMTE）：通道数 +/-，每通道基准值 +/-（步进 10） =====
+
+static int simTeCnt()
+{
+  int i = cfgIndexOf("te.cnt");
+  return constrain(i >= 0 ? cfgGetRaw(cfgAt(i)).toInt() : 4, 1, 8);
+}
+
+static long simTeBase(int ch)   // ch: 1~8
+{
+  char k[8];
+  snprintf(k, sizeof(k), "te.ch%d", ch);
+  int i = cfgIndexOf(k);
+  return constrain(i >= 0 ? (long)cfgGetRaw(cfgAt(i)).toInt() : 0L, 0L, 65535L);
+}
+
+static void simTeSet(const char *key, long v)
+{
+  int i = cfgIndexOf(key);
+  if (i < 0) return;
+  String err;
+  cfgSet(cfgAt(i), String(constrain(v, 0L, 65535L)), err);   // CT_INT 范围校验在 cfgSet 内
+}
+
+static void simTeStep(int ch, int d)   // 步进越界时循环（0↔65535）
+{
+  char k[8];
+  snprintf(k, sizeof(k), "te.ch%d", ch);
+  long v = simTeBase(ch) + d;
+  if (v < 0) v = 65535;
+  if (v > 65535) v = 0;
+  simTeSet(k, v);
+}
+
+static void drawSimTeBody()
+{
+  bool run = sim::teOn();
+  drawTextAt(14, centerBaseY(4, 28), "← 模拟遥测", COL_TEXT, COL_BG);
+  String st = run ? "发帧中" : "已停止";
+  drawTextAt(240, centerBaseY(4, 28), st, run ? COL_OK : COL_SUB, COL_BG);
+
+  gfx->fillRoundRect(3, 36, 314, 44, 8, COL_PANEL);
+  drawTextAt(14, centerBaseY(36, 44), String("通道数 ") + simTeCnt(), COL_TEXT, COL_PANEL);
+  drawBtn(210, 42, 48, 32, "-", COL_KEY_FN, COL_TEXT);
+  drawBtn(264, 42, 48, 32, "+", COL_KEY_FN, COL_TEXT);
+
+  int n = simTeCnt();
+  for (int i = 0; i < n; i++)
+  {
+    int y = 86 + i * 43;
+    gfx->fillRoundRect(3, y, 314, 39, 8, COL_PANEL);
+    char lb[16];
+    snprintf(lb, sizeof(lb), "通道%d", i + 1);
+    drawTextAt(14, centerBaseY(y, 39), lb, COL_SUB, COL_PANEL);
+    char v[12];
+    snprintf(v, sizeof(v), "%ld", simTeBase(i + 1));
+    drawTextAt(96, centerBaseY(y, 39), v, COL_TEXT, COL_PANEL);
+    drawBtn(208, y + 4, 48, 31, "-", COL_KEY_FN, COL_TEXT);
+    drawBtn(262, y + 4, 48, 31, "+", COL_KEY_FN, COL_TEXT);
+  }
+
+  drawBtn(6, 436, 150, 40, run ? "发帧:开" : "发帧:关", run ? COL_OK : COL_KEY_FN, run ? 0xFFFF : COL_TEXT);
+  drawBtn(162, 436, 152, 40, "返回", COL_KEY_FN, COL_TEXT);
+}
+
+static void handleSimTeTouch(bool press, bool release, bool down, int x, int y)
+{
+  (void)down;
+  (void)release;
+  if (press && ptIn(x, y, 3, 4, 56, 28)) { gotoScreen(S_CONF); return; }
+
+  if (press && ptIn(x, y, 210, 42, 48, 32)) { simTeSet("te.cnt", simTeCnt() - 1); dirtyFull = true; return; }
+  if (press && ptIn(x, y, 264, 42, 48, 32)) { simTeSet("te.cnt", simTeCnt() + 1); dirtyFull = true; return; }
+
+  if (press && y >= 86)
+  {
+    int i = (y - 86) / 43;
+    if (i >= 0 && i < simTeCnt() && y < 86 + i * 43 + 39)
+    {
+      if (ptIn(x, y, 208, 86 + i * 43 + 4, 48, 31)) { simTeStep(i + 1, -10); dirtyFull = true; return; }
+      if (ptIn(x, y, 262, 86 + i * 43 + 4, 48, 31)) { simTeStep(i + 1, 10); dirtyFull = true; return; }
+    }
+  }
+
+  if (press && y >= 436)
+  {
+    String err;
+    if (ptIn(x, y, 6, 436, 150, 40))
+    {
+      int i = cfgIndexOf("sim.te");
+      if (i >= 0) cfgSet(cfgAt(i), sim::teOn() ? "0" : "1", err);   // cfgSet 内同步内存开关
+      dirtyFull = true;
+    }
+    else if (ptIn(x, y, 162, 436, 152, 40))
+      gotoScreen(S_CONF);
+  }
+}
+
 static void drawDecodeBody()
 {
   if (!re::hasRule())
@@ -1851,6 +2060,12 @@ static void drawBody()
     break;
   case S_DECODE:
     drawDecodeBody();
+    break;
+  case S_SIMIO:
+    drawSimIoBody();
+    break;
+  case S_SIMTE:
+    drawSimTeBody();
     break;
   case S_CHAT:
     chatRender(CHAT_TOP, chatViewBot() - CHAT_TOP, chatScroll, aiBusy(), lastBusyPhase % 3);
@@ -2506,6 +2721,8 @@ static void routeTouch(bool press, bool release, bool down, int x, int y)
   case S_BTMOD: handleBtmodTouch(press, release, down, x, y); break;
   case S_MODELS: handleModelsTouch(press, release, down, x, y); break;
   case S_DECODE: handleDecodeTouch(press, release, down, x, y); break;
+  case S_SIMIO: handleSimIoTouch(press, release, down, x, y); break;
+  case S_SIMTE: handleSimTeTouch(press, release, down, x, y); break;
   case S_RELAY:
     if (press)
     {

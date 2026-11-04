@@ -61,11 +61,20 @@ static const CfgItem TABLE[] = {
     // 协议解码：APP 下发规则（docs/app-protocol.md），事件推送到手机、解码结果落盘
     {"dec.push", "协议解码", "解码事件推送", CT_BOOL, 0, 0, nullptr, 0, "0"},
     {"dec.csv", "协议解码", "decoded.csv 落盘", CT_BOOL, 0, 0, nullptr, 0, "0"},
-    {"sim.io", "协议解码", "模拟开关量帧", CT_BOOL, 0, 0, nullptr, 0, "0"},
+    {"sim.io", "协议解码", "模拟开关量 >", CT_PAGE, 0, 0, nullptr, 0, "0"},
     {"sim.cnt", "协议解码", "开关路数(1-64)", CT_INT, 1, 64, nullptr, 0, "8"},
     {"sim.mode", "协议解码", "开关模式", CT_ENUM, 0, 0, "随机|固定", 0, "随机"},
     {"sim.mask", "协议解码", "开关位图(hex)", CT_STR, 0, 0, nullptr, 0, "01"},
-    {"sim.te", "协议解码", "模拟遥测帧", CT_BOOL, 0, 0, nullptr, 0, "0"},
+    {"sim.te", "协议解码", "模拟遥测 >", CT_PAGE, 0, 0, nullptr, 0, "0"},
+    {"te.cnt", "协议解码", "遥测通道数(1-8)", CT_INT, 1, 8, nullptr, 0, "4"},
+    {"te.ch1", "协议解码", "遥测基准1", CT_INT, 0, 65535, nullptr, 0, "2200"},
+    {"te.ch2", "协议解码", "遥测基准2", CT_INT, 0, 65535, nullptr, 0, "123"},
+    {"te.ch3", "协议解码", "遥测基准3", CT_INT, 0, 65535, nullptr, 0, "2500"},
+    {"te.ch4", "协议解码", "遥测基准4", CT_INT, 0, 65535, nullptr, 0, "265"},
+    {"te.ch5", "协议解码", "遥测基准5", CT_INT, 0, 65535, nullptr, 0, "1000"},
+    {"te.ch6", "协议解码", "遥测基准6", CT_INT, 0, 65535, nullptr, 0, "1000"},
+    {"te.ch7", "协议解码", "遥测基准7", CT_INT, 0, 65535, nullptr, 0, "1000"},
+    {"te.ch8", "协议解码", "遥测基准8", CT_INT, 0, 65535, nullptr, 0, "1000"},
 };
 #define TABLE_N (sizeof(TABLE) / sizeof(TABLE[0]))
 
@@ -185,6 +194,14 @@ String cfgGetRaw(const CfgItem &it)
     p.begin("cfg", true);
     String def = !strcmp(it.key, "sim.cnt") ? "8" : !strcmp(it.key, "sim.mode") ? "随机" : "01";
     String v = p.getString(it.key, def);
+    p.end();
+    return v;
+  }
+  if (!strcmp(it.key, "te.cnt") || !strncmp(it.key, "te.ch", 5))
+  {
+    Preferences p;
+    p.begin("cfg", true);
+    String v = p.getString(it.key, it.defval);
     p.end();
     return v;
   }
@@ -350,7 +367,8 @@ bool cfgSet(const CfgItem &it, const String &val, String &err)
     else if (!strcmp(it.key, "sim.te")) sim::setTe(v == "1");
     else if (!strcmp(it.key, "dec.push")) re::setPush(v == "1");
   }
-  else if (!strcmp(it.key, "sim.cnt") || !strcmp(it.key, "sim.mode") || !strcmp(it.key, "sim.mask"))
+  else if (!strcmp(it.key, "sim.cnt") || !strcmp(it.key, "sim.mode") || !strcmp(it.key, "sim.mask") ||
+           !strcmp(it.key, "te.cnt") || !strncmp(it.key, "te.ch", 5))
   {
     Preferences p;
     p.begin("cfg", false);
@@ -412,7 +430,7 @@ void cfgBuildSettingsJson(String &out)
     else out += ",";
 
     const char *t = (it.type == CT_STR) ? "str" : (it.type == CT_INT) ? "int"
-                                   : (it.type == CT_BOOL)              ? "bool"
+                                   : (it.type == CT_BOOL || it.type == CT_PAGE) ? "bool"
                                                                        : "enum";
     out += "{\"k\":\"" + cfgJsonEsc(it.key) + "\",\"l\":\"" + cfgJsonEsc(it.label) +
            "\",\"t\":\"" + t + "\",\"v\":\"" + cfgJsonEsc(cfgGetShow(it)) + "\"";

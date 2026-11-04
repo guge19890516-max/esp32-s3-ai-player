@@ -9,7 +9,8 @@ enum CfgType : uint8_t
   CT_STR = 0,
   CT_INT,
   CT_BOOL,
-  CT_ENUM
+  CT_ENUM,
+  CT_PAGE   // 点击跳转专用页（label 带 ">"），值仍按 CT_BOOL 存
 };
 
 #define CFG_SECRET 0x01   // 读接口里打码显示
